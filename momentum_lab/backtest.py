@@ -57,7 +57,7 @@ def evaluate(returns, risk_free_rate=RISK_FREE_RATE):
         total_return, volatility, win_rate, profit_factor, skew, kurtosis.
     """
     returns = returns.dropna()
-    if len(returns) < 2:
+    if len(returns) < 2 or returns.std() == 0:
         return {k: 0.0 for k in [
             "sharpe", "sortino", "calmar", "max_drawdown", "cagr",
             "total_return", "volatility", "win_rate", "profit_factor",

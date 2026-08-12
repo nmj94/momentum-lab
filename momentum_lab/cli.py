@@ -19,7 +19,9 @@ def main():
                "  momentum-lab AAPL --strategies tsmom,ma_cross,rsi\n",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("ticker", help="Yahoo Finance ticker (e.g. GLD, SPY, BTC-USD, AAPL)")
+    parser.add_argument("ticker", nargs="?", default=None,
+                        help="Yahoo Finance ticker (e.g. GLD, SPY, BTC-USD, AAPL). "
+                             "Omit when using --list.")
     parser.add_argument("--quick", action="store_true", help="Quick mode: 5 params per strategy")
     parser.add_argument("--strategies", type=str, default=None,
                         help="Comma-separated strategy names (default: all)")
@@ -36,6 +38,9 @@ def main():
     if args.list:
         list_strategies()
         return
+
+    if not args.ticker:
+        parser.error("ticker is required (e.g. momentum-lab GLD). Use --list to see strategies.")
 
     strategies = None
     if args.strategies:
