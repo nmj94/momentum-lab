@@ -1,6 +1,9 @@
 # Momentum Lab
 
 **Find the optimal momentum trading strategy for any asset. Just provide a ticker.**
+**只需提供一个股票代码，自动找到最优动量交易策略。**
+
+[English](README.md) | [中文](README_CN.md)
 
 Momentum Lab automatically tests 26 strategies across hundreds of thousands of parameter combinations to find the best-performing strategy for your chosen asset. It includes classic momentum indicators, machine learning models, and an adaptive regime-aware strategy that switches between sub-strategies based on market conditions.
 
@@ -145,14 +148,9 @@ Options:
 
 ## Installation
 
-### From PyPI (coming soon)
-```bash
-pip install momentum-lab
-```
-
 ### From source
 ```bash
-git clone https://github.com/yourusername/momentum-lab.git
+git clone https://github.com/nmj94/momentum-lab.git
 cd momentum-lab
 pip install -e .
 ```
