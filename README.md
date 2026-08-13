@@ -48,6 +48,10 @@ You provide a ticker (e.g. GLD)
   Evaluate best strategy on Test set
         |
         v
+  Robustness check: perturb optimal params
+  to detect overfitting (isolated peak)
+        |
+        v
   Report: Best strategy + parameters + metrics
 ```
 
@@ -115,6 +119,12 @@ results = run_search("GLD", quick=True)
 print(f"Best strategy: {results['best']['strategy']}")
 print(f"Best params: {results['best']['params']}")
 
+# Robustness check result (overfitting detection)
+rob = results.get("robustness")
+print(f"Grade: {rob['grade']} ({rob['verdict']})")
+print(f"Baseline val Sharpe: {rob['baseline']:.4f}")
+print(f"Neighbor median: {rob['stats']['median']:.4f}")
+
 # Or test a single strategy
 from momentum_lab.data import prepare_data
 data, df = prepare_data("SPY")
@@ -142,9 +152,26 @@ Options:
   --start DATE        Data start date (default: 2004-01-01)
   --end DATE          Data end date (default: today)
   --top N             Number of top results (default: 50)
+  --robust            Run robustness check on best params (default: True)
+  --no-robust         Skip the robustness check
+  --robust-frac F     Perturbation fraction (default: 0.2)
   --list              List all strategies and exit
   --version           Show version
 ```
+
+## Robustness Check
+
+The search can end up on a lucky parameter spike that won't generalize. After finding
+the best strategy, momentum-lab perturbs every numeric parameter by +/-20% (integers by
++/-1) and re-evaluates Validation Sharpe for each neighbor:
+
+- **Grade A (Robust)**: neighbors stay close to the optimum — a wide plateau
+- **Grade B**: moderately stable
+- **Grade C**: fragile — the result depends heavily on exact parameters
+- **Grade D / isolated peak**: the optimum is a spike; treat the result as overfit
+
+If you see *ISOLATED PEAK - likely overfit*, lower your expectations for live trading
+and consider constraining the search space.
 
 ## Installation
 
@@ -164,6 +191,7 @@ pip install -e .
 After running, results are saved to `experiments/`:
 - `all_results.csv` - Every experiment with train/val/test metrics
 - `top_results.csv` - Top N strategies by validation Sharpe
+- `robustness.csv` - Robustness check summary for the best strategy
 - Console output shows the best strategy with parameters and test set performance
 
 ## Example Results (GLD)

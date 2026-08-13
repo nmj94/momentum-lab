@@ -112,3 +112,34 @@ def test_ml_features_present():
     # Walk-forward predictions cover only the out-of-sample tail window.
     assert len(pos) > 0
     assert len(pos) <= len(df)
+
+
+def test_perturb_params_int_float():
+    """Perturbation must nudge ints by +-1 and floats by a fraction."""
+    from momentum_lab.robustness import perturb_params
+    params = {"regime_confirm": 1, "position_size": 2, "vol_target": 0.10}
+    nb = perturb_params(params, frac=0.2)
+    values = {k: {n[k] for n in nb} for k in params}
+    assert 0 in values["regime_confirm"] and 2 in values["regime_confirm"]
+    assert 1 in values["position_size"] and 3 in values["position_size"]
+    assert 0.08 in values["vol_target"] or 0.12 in values["vol_target"]
+
+
+def test_robustness_check_shape():
+    """robustness_check returns a valid report dict."""
+    from momentum_lab.robustness import robustness_check
+    close = pd.Series(np.random.randn(300).cumsum() + 100)
+    data = {"close": close, "high": close + 1, "low": close - 1, "open": close,
+            "volume": pd.Series(1, index=close.index)}
+    df = pd.DataFrame({"close": close}, index=close.index)
+    n = len(df); s1 = int(n * 0.6); s2 = int(n * 0.8)
+    periods = {"train": (df.index[0], df.index[s1]),
+               "val": (df.index[s1], df.index[s2]),
+               "test": (df.index[s2], df.index[-1])}
+    report = robustness_check(data, df, periods, "tsmom",
+                              {"lookback": 21, "threshold": 0.0,
+                               "long_short": True, "position_size": 1.0},
+                              cost_bps=1.0, frac=0.2)
+    assert report["error"] is None
+    assert report["grade"] in {"A", "B", "C", "D"}
+    assert report["n_neighbors"] > 0

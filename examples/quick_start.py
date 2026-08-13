@@ -7,3 +7,8 @@ results = run_search("GLD", quick=True)
 
 print(f"\nBest strategy: {results['best']['strategy']}")
 print(f"Best params: {results['best']['params']}")
+
+# Robustness check result (overfitting detection)
+rob = results.get("robustness") or {}
+if rob and rob.get("grade"):
+    print(f"Robustness grade: {rob['grade']} ({rob['verdict']})")

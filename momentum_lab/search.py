@@ -11,6 +11,7 @@ import pandas as pd
 from .backtest import backtest, evaluate, get_buy_and_hold
 from .data import prepare_data
 from .strategies import STRATEGY_REGISTRY, get_strategy, list_strategies
+from .robustness import robustness_check
 
 try:
     from tqdm import tqdm
@@ -111,7 +112,8 @@ def run_single_experiment(strategy_name, params, data, df, periods, cost_bps=1.0
 
 
 def run_search(ticker="GLD", strategies=None, cost_bps=1.0, workers=1,
-               quick=False, top_n=50, start="2004-01-01", end=None):
+               quick=False, top_n=50, start="2004-01-01", end=None,
+               robust=True, robust_frac=0.2):
     """Run exhaustive strategy search for any ticker.
 
     Args:
@@ -123,9 +125,11 @@ def run_search(ticker="GLD", strategies=None, cost_bps=1.0, workers=1,
         top_n: Number of top results to keep.
         start: Data start date.
         end: Data end date. None = today.
+        robust: If True, run a neighborhood robustness check on the best params.
+        robust_frac: Perturbation fraction for the robustness check.
 
     Returns:
-        dict with 'all_results', 'top_results', 'best'.
+        dict with 'all_results', 'top_results', 'best', 'robustness'.
     """
     RESULT_DIR.mkdir(exist_ok=True)
     print(f"momentum-lab: Searching optimal strategies for {ticker}")
@@ -220,6 +224,47 @@ def run_search(ticker="GLD", strategies=None, cost_bps=1.0, workers=1,
     else:
         best = None
 
+    # Phase 4: Robustness check on the best parameters
+    robustness = None
+    if robust and best is not None:
+        print("\n  [Phase 4] Robustness check (perturbing optimal params by "
+              f"{robust_frac:.0%}) ...")
+        robustness = robustness_check(
+            data, df, periods, sname, params,
+            cost_bps=cost_bps, frac=robust_frac,
+        )
+        if robustness.get("error"):
+            print(f"    Skipped: {robustness['error']}")
+        else:
+            st = robustness["stats"]
+            print(f"    Baseline val Sharpe: {robustness['baseline']:.4f}")
+            print(f"    Neighbors evaluated: {robustness['n_neighbors']}")
+            print(f"    Neighbor val Sharpe: mean={st['mean']:.4f} "
+                  f"median={st['median']:.4f} min={st['min']:.4f} "
+                  f"max={st['max']:.4f} std={st['std']:.4f}")
+            print(f"    Degraded (<50% base): {robustness['pct_degrade']:.1%} | "
+                  f"Positive neighbors: {robustness['pct_positive']:.1%}")
+            print(f"    Robustness grade: {robustness['grade']} "
+                  f"({robustness['verdict']})"
+                  + ("  [ISOLATED PEAK - likely overfit]" if robustness["isolated_peak"] else ""))
+            pd.DataFrame([{
+                "strategy": sname,
+                "params": json.dumps(params, ensure_ascii=False, default=_jsonable),
+                "baseline_val_sharpe": robustness["baseline"],
+                "n_neighbors": robustness["n_neighbors"],
+                "neighbor_mean": st["mean"],
+                "neighbor_median": st["median"],
+                "neighbor_std": st["std"],
+                "neighbor_min": st["min"],
+                "neighbor_max": st["max"],
+                "pct_degrade": robustness["pct_degrade"],
+                "pct_positive": robustness["pct_positive"],
+                "grade": robustness["grade"],
+                "verdict": robustness["verdict"],
+                "isolated_peak": robustness["isolated_peak"],
+            }]).to_csv(RESULT_DIR / "robustness.csv", index=False, encoding="utf-8-sig")
+            print(f"    Saved to {RESULT_DIR / 'robustness.csv'}")
+
     # Save summary
     _save_results_csv(all_results, RESULT_DIR / "all_results.csv")
     if top:
@@ -232,4 +277,5 @@ def run_search(ticker="GLD", strategies=None, cost_bps=1.0, workers=1,
             rows.append(row)
         pd.DataFrame(rows).to_csv(RESULT_DIR / "top_results.csv", index=False, encoding="utf-8-sig")
 
-    return {"all_results": all_results, "top_results": top, "best": best}
+    return {"all_results": all_results, "top_results": top, "best": best,
+            "robustness": robustness}

@@ -47,6 +47,10 @@ momentum-lab AAPL --strategies tsmom,ma_cross,rsi,regime_aware
   在测试集上评估最优策略
         |
         v
+  稳健性检验：扰动最优参数
+  （检测过拟合/孤立峰值）
+        |
+        v
   输出：最优策略 + 参数 + 指标
 ```
 
@@ -114,6 +118,12 @@ results = run_search("GLD", quick=True)
 print(f"最优策略: {results['best']['strategy']}")
 print(f"最优参数: {results['best']['params']}")
 
+# 稳健性检验结果（过拟合检测）
+rob = results.get("robustness")
+print(f"等级: {rob['grade']} ({rob['verdict']})")
+print(f"基线验证 Sharpe: {rob['baseline']:.4f}")
+print(f"邻域中位数: {rob['stats']['median']:.4f}")
+
 # 单独测试某个策略
 from momentum_lab.data import prepare_data
 data, df = prepare_data("SPY")
@@ -141,9 +151,25 @@ momentum-lab TICKER [选项]
   --start DATE        数据开始日期（默认 2004-01-01）
   --end DATE          数据结束日期（默认今天）
   --top N             保留前 N 个结果（默认 50）
+  --robust            对最优参数做稳健性检验（默认开启）
+  --no-robust         跳过稳健性检验
+  --robust-frac F     参数扰动比例（默认 0.2）
   --list              列出所有策略并退出
   --version           显示版本号
 ```
+
+## 稳健性检验
+
+搜索可能会落在某个碰巧表现好的参数尖峰上，无法泛化。找到最优策略后，momentum-lab
+会把每个数值参数扰动 ±20%（整数 ±1）并重新评估每个邻域的验证集 Sharpe：
+
+- **等级 A（稳健）**：邻域结果接近最优 —— 参数高原宽阔
+- **等级 B**：相对稳定
+- **等级 C**：脆弱 —— 结果高度依赖精确参数
+- **等级 D / 孤立峰值**：最优点是尖峰，结果属于过拟合
+
+如果看到 *ISOLATED PEAK - likely overfit*（疑似孤立峰值/过拟合），请降低对实盘的预期，
+并考虑收窄参数搜索空间。
 
 ## 安装
 
@@ -163,6 +189,7 @@ pip install -e .
 运行后，结果保存在 `experiments/` 目录：
 - `all_results.csv` - 所有实验结果（含训练/验证/测试指标）
 - `top_results.csv` - 按验证集 Sharpe 排序的前 N 个策略
+- `robustness.csv` - 最优策略的稳健性检验汇总
 - 控制台输出最优策略的参数和测试集表现
 
 ## 示例结果（黄金 GLD）

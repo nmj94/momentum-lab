@@ -11,6 +11,7 @@ from .strategies import (
     RegimeAware,
 )
 from .search import run_search
+from .robustness import robustness_check
 
 __all__ = [
     "download_data",
@@ -23,4 +24,5 @@ __all__ = [
     "list_strategies",
     "RegimeAware",
     "run_search",
+    "robustness_check",
 ]

@@ -30,6 +30,12 @@ def main():
     parser.add_argument("--start", type=str, default="2004-01-01", help="Data start date")
     parser.add_argument("--end", type=str, default=None, help="Data end date (default: today)")
     parser.add_argument("--top", type=int, default=50, help="Number of top results to keep")
+    parser.add_argument("--robust", dest="robust", action="store_true", default=True,
+                        help="Run robustness check on best params (default: True)")
+    parser.add_argument("--no-robust", dest="robust", action="store_false",
+                        help="Skip robustness check")
+    parser.add_argument("--robust-frac", type=float, default=0.2,
+                        help="Perturbation fraction for robustness check (default: 0.2)")
     parser.add_argument("--list", action="store_true", help="List all strategies and exit")
     parser.add_argument("--version", action="version", version=f"momentum-lab {__version__}")
 
@@ -55,6 +61,8 @@ def main():
         top_n=args.top,
         start=args.start,
         end=args.end,
+        robust=args.robust,
+        robust_frac=args.robust_frac,
     )
 
 
