@@ -84,3 +84,31 @@ def test_regime_aware():
     pos = s.run(data, adx_trend_threshold=15, mom_lookback=63,
                 vol_target_normal=0.12, position_size=2.0)
     assert len(pos) == len(close)
+
+
+def test_evaluate_zero_volatility():
+    """Evaluate() must not blow up on zero-volatility returns."""
+    const = pd.Series([0.01] * 100)
+    metrics = evaluate(const)
+    assert metrics["sharpe"] == 0.0
+    assert metrics["cagr"] == 0.0
+
+    flat = pd.Series([0.0] * 100)
+    assert evaluate(flat)["sharpe"] == 0.0
+
+
+def test_ml_features_present():
+    """ML strategies must work even when data already has 'features'."""
+    from momentum_lab.strategies import get_strategy
+    df = pd.DataFrame(np.random.randn(300, 3).cumsum(axis=0) + 100,
+                      columns=["open", "high", "low"])
+    df["close"] = df["high"] + df["low"]
+    df.index = pd.date_range("2020-01-01", periods=300, freq="B")
+    features = compute_features(df)
+    data = {c: df[c] for c in df.columns}
+    data["features"] = features
+    s = get_strategy("ml_logreg")
+    pos = s.run(data, lookback=21, forward=1, C=1.0, long_short=True)
+    # Walk-forward predictions cover only the out-of-sample tail window.
+    assert len(pos) > 0
+    assert len(pos) <= len(df)

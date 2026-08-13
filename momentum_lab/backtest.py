@@ -1,13 +1,24 @@
-"""backtest.py - Vectorized backtest engine and evaluation metrics."""
+"""backtest.py - Vectorized backtest engine and evaluation metrics.
+
+All functions accept pandas Series indexed by date. The backtest engine
+uses previous-day positions to compute current-day returns (no look-ahead bias).
+"""
 
 import numpy as np
 import pandas as pd
+from typing import Optional
 
-RISK_FREE_RATE = 0.04
+RISK_FREE_RATE: float = 0.04
 
 
-def backtest(positions, prices, cost_bps=1.0, vol_target=None,
-             vol_lookback=21, max_leverage=2.0):
+def backtest(
+    positions: pd.Series,
+    prices: pd.Series,
+    cost_bps: float = 1.0,
+    vol_target: Optional[float] = None,
+    vol_lookback: int = 21,
+    max_leverage: float = 2.0,
+) -> dict:
     """Run a vectorized backtest.
 
     Args:
@@ -46,7 +57,7 @@ def backtest(positions, prices, cost_bps=1.0, vol_target=None,
     }
 
 
-def evaluate(returns, risk_free_rate=RISK_FREE_RATE):
+def evaluate(returns: pd.Series, risk_free_rate: float = RISK_FREE_RATE) -> dict:
     """Compute comprehensive evaluation metrics.
 
     Args:
@@ -57,7 +68,7 @@ def evaluate(returns, risk_free_rate=RISK_FREE_RATE):
         total_return, volatility, win_rate, profit_factor, skew, kurtosis.
     """
     returns = returns.dropna()
-    if len(returns) < 2 or returns.std() == 0:
+    if len(returns) < 2 or returns.std() < 1e-10:
         return {k: 0.0 for k in [
             "sharpe", "sortino", "calmar", "max_drawdown", "cagr",
             "total_return", "volatility", "win_rate", "profit_factor",
@@ -101,13 +112,15 @@ def evaluate(returns, risk_free_rate=RISK_FREE_RATE):
     }
 
 
-def evaluate_strategy(positions, prices, **bt_kwargs):
+def evaluate_strategy(
+    positions: pd.Series, prices: pd.Series, **bt_kwargs
+) -> dict:
     """Backtest + evaluate in one step."""
     result = backtest(positions, prices, **bt_kwargs)
     result["metrics"] = evaluate(result["returns"])
     return result
 
 
-def get_buy_and_hold(prices):
-    """Buy and hold benchmark positions."""
+def get_buy_and_hold(prices: pd.Series) -> pd.Series:
+    """Buy and hold benchmark positions (always +1)."""
     return pd.Series(1.0, index=prices.index)

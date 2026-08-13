@@ -19,6 +19,22 @@ except ImportError:
 
 RESULT_DIR = Path("experiments")
 
+# Shared state for parallel sub-processes (set via Pool initializer).
+_POOL_STATE = None
+
+
+def _init_worker(data, df, periods, cost_bps):
+    global _POOL_STATE
+    _POOL_STATE = (data, df, periods, cost_bps)
+
+
+def _worker_run(args):
+    """Module-level worker that runs a single experiment (required on Windows)."""
+    strategy_name, params = args
+    data, df, periods, cost_bps = _POOL_STATE
+    result = run_single_experiment(strategy_name, params, data, df, periods, cost_bps)
+    return {k: v for k, v in result.items() if k != "positions"}
+
 
 def _jsonable(v):
     if isinstance(v, (np.integer,)): return int(v)
@@ -137,24 +153,46 @@ def run_search(ticker="GLD", strategies=None, cost_bps=1.0, workers=1,
     all_results = []
     t0 = time.time()
 
-    for sname in strategies:
-        if sname not in STRATEGY_REGISTRY: continue
-        s = get_strategy(sname)
-        combos = s.get_param_combinations()
-        if quick: combos = combos[:5]
-        cat = "ML" if sname.startswith("ml_") else ("combo" if sname in ["ensemble","stacked","regime_aware"] else "classic")
-        print(f"\n  [{cat}] {sname} ({len(combos)} params) ...")
+    use_workers = workers > 1 and len(strategies) > 0
+    pool = None
+    if use_workers:
+        import multiprocessing as mp
+        ctx = mp.get_context("spawn")
+        pool = ctx.Pool(workers, initializer=_init_worker,
+                        initargs=(data, df, periods, cost_bps))
 
-        for i, params in enumerate(tqdm(combos, desc=f"  {sname}", leave=True)):
-            result = run_single_experiment(sname, params, data, df, periods, cost_bps)
-            compact = {k: v for k, v in result.items() if k != "positions"}
-            all_results.append(compact)
+    try:
+        for sname in strategies:
+            if sname not in STRATEGY_REGISTRY: continue
+            s = get_strategy(sname)
+            combos = s.get_param_combinations()
+            if quick: combos = combos[:5]
+            cat = "ML" if sname.startswith("ml_") else ("combo" if sname in ["ensemble","stacked","regime_aware"] else "classic")
+            print(f"\n  [{cat}] {sname} ({len(combos)} params) ...")
 
-        _save_results_csv(all_results, RESULT_DIR / "all_results.csv")
-        print(f"  [checkpoint] {sname} done, {len(all_results)} total")
+            if pool is not None:
+                job = pool.imap_unordered(_worker_run, ((sname, p) for p in combos), chunksize=16)
+                for result in tqdm(job, desc=f"  {sname}", total=len(combos), leave=True):
+                    all_results.append(result)
+            else:
+                for i, params in enumerate(tqdm(combos, desc=f"  {sname}", leave=True)):
+                    result = run_single_experiment(sname, params, data, df, periods, cost_bps)
+                    compact = {k: v for k, v in result.items() if k != "positions"}
+                    all_results.append(compact)
+
+            _save_results_csv(all_results, RESULT_DIR / "all_results.csv")
+            print(f"  [checkpoint] {sname} done, {len(all_results)} total")
+    finally:
+        if pool is not None:
+            pool.close()
+            pool.join()
 
     elapsed = time.time() - t0
     print(f"\n  Search complete! {len(all_results)} results in {elapsed/60:.1f} min")
+
+    if not all_results:
+        print("  WARNING: No experiments completed. Check strategy names and data.")
+        return {"all_results": [], "top_results": [], "best": None}
 
     # Phase 2: Rank by val Sharpe
     all_results = _normalize_results(all_results)

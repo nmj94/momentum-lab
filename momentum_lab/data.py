@@ -32,7 +32,11 @@ def download_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True):
     df = yf.download(ticker, start=start, end=end, auto_adjust=True, progress=False)
 
     if df is None or df.empty:
-        raise ValueError(f"Download failed for {ticker}. Check ticker or network.")
+        raise ValueError(
+            f"Download failed for '{ticker}'. "
+            f"Possible causes: invalid ticker, delisted, or network error. "
+            f"Try searching at https://finance.yahoo.com/lookup"
+        )
 
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)

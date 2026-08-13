@@ -400,7 +400,10 @@ class _MLBase(BaseStrategy):
     def _prepare_data(self, data, lookback, forward, feature_cols=None):
         from .data import compute_features
         close = data["close"]
-        feats = data.get("features") or compute_features(pd.DataFrame({"close": close}))
+        if "features" not in data or data["features"] is None:
+            feats = compute_features(pd.DataFrame({"close": close}))
+        else:
+            feats = data["features"]
         if feature_cols: feats = feats[feature_cols]
         fwd_ret = close.pct_change(forward).shift(-forward)
         label = (fwd_ret > 0).astype(int)
@@ -440,7 +443,10 @@ class MLLogReg(_MLBase):
     def generate_positions(self, data, lookback=42, forward=5, C=1.0, penalty="l2", long_short=True, retrain=True):
         from sklearn.linear_model import LogisticRegression
         feats, label = self._prepare_data(data, lookback, forward)
-        fn = lambda: LogisticRegression(C=C, penalty=penalty, solver="liblinear", max_iter=2000, random_state=42)
+        # Modern API: l1_ratio replaces the deprecated 'penalty' argument.
+        l1_ratio = 1.0 if penalty == "l1" else 0.0
+        fn = lambda: LogisticRegression(C=C, l1_ratio=l1_ratio, solver="saga",
+                                        max_iter=2000, random_state=42)
         return self._preds_to_positions(self._walk_forward(feats, label, fn, retrain=retrain), long_short)
 
 

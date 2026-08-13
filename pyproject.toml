@@ -46,5 +46,10 @@ target-version = "py310"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["momentum_lab"]
