@@ -7,7 +7,6 @@ an isolated peak, neighbors collapse and the result is fragile.
 """
 
 import numpy as np
-import pandas as pd
 
 from .backtest import backtest, evaluate
 from .strategies import get_strategy
@@ -34,7 +33,7 @@ def perturb_params(params: dict, frac: float = 0.2) -> list:
             new = dict(params)
             nv = val + delta
             if is_int:
-                nv = int(round(nv))
+                nv = round(nv)
                 if nv == int(val):
                     nv = int(val) + (1 if delta > 0 else -1)
             new[key] = nv
@@ -47,8 +46,8 @@ def _val_sharpe(strategy, data, prices, periods, params, cost_bps) -> float:
         positions = strategy.run(data, **params)
     except Exception:
         return -99.0
-    pp = positions.loc[periods["val"][0]:periods["val"][1]]
-    pr = prices.loc[periods["val"][0]:periods["val"][1]]
+    pp = positions.loc[periods["val"][0] : periods["val"][1]]
+    pr = prices.loc[periods["val"][0] : periods["val"][1]]
     if len(pp) == 0 or pp.abs().sum() == 0:
         return -99.0
     try:
@@ -57,8 +56,7 @@ def _val_sharpe(strategy, data, prices, periods, params, cost_bps) -> float:
         return -99.0
 
 
-def robustness_check(data, df, periods, sname, params, cost_bps=1.0,
-                     frac=0.2, min_neighbors=4):
+def robustness_check(data, df, periods, sname, params, cost_bps=1.0, frac=0.2, min_neighbors=4):
     """Run neighborhood perturbation and summarize stability.
 
     Returns a dict with:
@@ -70,17 +68,26 @@ def robustness_check(data, df, periods, sname, params, cost_bps=1.0,
     base = _val_sharpe(strategy, data, prices, periods, params, cost_bps)
     neighbors = perturb_params(params, frac=frac)
     if len(neighbors) < min_neighbors:
-        return {"error": f"Too few numeric params to perturb ({len(neighbors)} neighbors).",
-                "baseline": base, "neighbors": neighbors,
-                "n_neighbors": len(neighbors), "grade": "N/A"}
+        return {
+            "error": f"Too few numeric params to perturb ({len(neighbors)} neighbors).",
+            "baseline": base,
+            "neighbors": neighbors,
+            "n_neighbors": len(neighbors),
+            "grade": "N/A",
+        }
 
     vals = [_val_sharpe(strategy, data, prices, periods, nb, cost_bps) for nb in neighbors]
     vals = np.array([v for v in vals if v > -99], dtype=float)
     n_valid = len(vals)
 
     if n_valid == 0:
-        return {"error": "All neighbors failed to evaluate.",
-                "baseline": base, "neighbors": [], "n_neighbors": 0, "grade": "N/A"}
+        return {
+            "error": "All neighbors failed to evaluate.",
+            "baseline": base,
+            "neighbors": [],
+            "n_neighbors": 0,
+            "grade": "N/A",
+        }
 
     stats = {
         "mean": float(vals.mean()),
@@ -112,7 +119,13 @@ def robustness_check(data, df, periods, sname, params, cost_bps=1.0,
         "pct_positive": pct_positive,
         "grade": grade,
         "isolated_peak": bool(peak_flag),
-        "verdict": ("Robust" if grade == "A" else
-                    "Relatively stable" if grade == "B" else
-                    "Fragile" if grade == "C" else "Overfit / fragile"),
+        "verdict": (
+            "Robust"
+            if grade == "A"
+            else "Relatively stable"
+            if grade == "B"
+            else "Fragile"
+            if grade == "C"
+            else "Overfit / fragile"
+        ),
     }

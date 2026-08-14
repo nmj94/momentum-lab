@@ -6,7 +6,6 @@ uses previous-day positions to compute current-day returns (no look-ahead bias).
 
 import numpy as np
 import pandas as pd
-from typing import Optional
 
 RISK_FREE_RATE: float = 0.04
 
@@ -15,7 +14,7 @@ def backtest(
     positions: pd.Series,
     prices: pd.Series,
     cost_bps: float = 1.0,
-    vol_target: Optional[float] = None,
+    vol_target: float | None = None,
     vol_lookback: int = 21,
     max_leverage: float = 2.0,
 ) -> dict:
@@ -69,11 +68,22 @@ def evaluate(returns: pd.Series, risk_free_rate: float = RISK_FREE_RATE) -> dict
     """
     returns = returns.dropna()
     if len(returns) < 2 or returns.std() < 1e-10:
-        return {k: 0.0 for k in [
-            "sharpe", "sortino", "calmar", "max_drawdown", "cagr",
-            "total_return", "volatility", "win_rate", "profit_factor",
-            "skew", "kurtosis"
-        ]}
+        return {
+            k: 0.0
+            for k in [
+                "sharpe",
+                "sortino",
+                "calmar",
+                "max_drawdown",
+                "cagr",
+                "total_return",
+                "volatility",
+                "win_rate",
+                "profit_factor",
+                "skew",
+                "kurtosis",
+            ]
+        }
 
     ann = 252
     mean_ret = returns.mean()
@@ -84,7 +94,7 @@ def evaluate(returns: pd.Series, risk_free_rate: float = RISK_FREE_RATE) -> dict
     sortino = (mean_ret * ann - risk_free_rate) / (downside_std * np.sqrt(ann) + 1e-10)
 
     equity = (1 + returns).cumprod()
-    drawdown = (equity / equity.cummax() - 1)
+    drawdown = equity / equity.cummax() - 1
     max_dd = drawdown.min()
 
     total_return = equity.iloc[-1] - 1
@@ -112,9 +122,7 @@ def evaluate(returns: pd.Series, risk_free_rate: float = RISK_FREE_RATE) -> dict
     }
 
 
-def evaluate_strategy(
-    positions: pd.Series, prices: pd.Series, **bt_kwargs
-) -> dict:
+def evaluate_strategy(positions: pd.Series, prices: pd.Series, **bt_kwargs) -> dict:
     """Backtest + evaluate in one step."""
     result = backtest(positions, prices, **bt_kwargs)
     result["metrics"] = evaluate(result["returns"])

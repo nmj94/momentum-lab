@@ -40,6 +40,11 @@ momentum-lab = "momentum_lab.cli:main"
 line-length = 120
 target-version = "py310"
 
+[tool.ruff.lint]
+# BLE001: broad Exception catching is intentional here - grid search and
+# robustness checks must tolerate individual failing (strategy, params) combos.
+extend-ignore = ["BLE001"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

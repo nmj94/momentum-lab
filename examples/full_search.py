@@ -5,23 +5,23 @@ from momentum_lab import run_search
 # Full exhaustive search (may take hours)
 results = run_search(
     ticker="SPY",
-    strategies=None,        # All strategies
-    cost_bps=1.0,           # 1 bps transaction cost
-    workers=8,              # 8 parallel workers
-    quick=False,            # Full parameter grid
-    top_n=50,               # Keep top 50
+    strategies=None,  # All strategies
+    cost_bps=1.0,  # 1 bps transaction cost
+    workers=8,  # 8 parallel workers
+    quick=False,  # Full parameter grid
+    top_n=50,  # Keep top 50
     start="2004-01-01",
 )
 
 # Access results
-print(f"\n{'='*60}")
-print(f"  Search complete!")
+print(f"\n{'=' * 60}")
+print("  Search complete!")
 print(f"  Total experiments: {len(results['all_results'])}")
 print(f"  Best strategy: {results['best']['strategy']}")
-print(f"{'='*60}")
+print(f"{'=' * 60}")
 
 # Or test a specific strategy
-from momentum_lab import get_strategy, prepare_data, backtest, evaluate
+from momentum_lab import backtest, evaluate, get_strategy, prepare_data
 
 data, df = prepare_data("SPY")
 strategy = get_strategy("regime_aware")
@@ -45,7 +45,7 @@ positions = strategy.run(
 
 result = backtest(positions, df["close"], cost_bps=1.0)
 metrics = evaluate(result["returns"])
-print(f"\nRegime Aware Strategy:")
+print("\nRegime Aware Strategy:")
 print(f"  Sharpe:  {metrics['sharpe']}")
 print(f"  CAGR:    {metrics['cagr']:.2%}")
 print(f"  MaxDD:   {metrics['max_drawdown']:.2%}")

@@ -2,7 +2,6 @@
 
 import json
 import time
-from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -10,13 +9,16 @@ import pandas as pd
 
 from .backtest import backtest, evaluate, get_buy_and_hold
 from .data import prepare_data
-from .strategies import STRATEGY_REGISTRY, get_strategy, list_strategies
 from .robustness import robustness_check
+from .strategies import STRATEGY_REGISTRY, get_strategy
 
 try:
     from tqdm import tqdm
 except ImportError:
-    def tqdm(x, **kw): return x
+
+    def tqdm(x, **kw):
+        return x
+
 
 RESULT_DIR = Path("experiments")
 
@@ -38,23 +40,33 @@ def _worker_run(args):
 
 
 def _jsonable(v):
-    if isinstance(v, (np.integer,)): return int(v)
-    if isinstance(v, (np.floating,)): return float(v)
-    if isinstance(v, (np.bool_,)): return bool(v)
-    if isinstance(v, (list, tuple)): return [_jsonable(x) for x in v]
+    if isinstance(v, (np.integer,)):
+        return int(v)
+    if isinstance(v, (np.floating,)):
+        return float(v)
+    if isinstance(v, (np.bool_,)):
+        return bool(v)
+    if isinstance(v, (list, tuple)):
+        return [_jsonable(x) for x in v]
     return v
 
 
 def _params_to_str(params):
     if isinstance(params, str):
-        try: params = json.loads(params)
-        except Exception: return params[:80]
-    if not isinstance(params, dict): return str(params)[:80]
+        try:
+            params = json.loads(params)
+        except Exception:
+            return params[:80]
+    if not isinstance(params, dict):
+        return str(params)[:80]
     parts = []
     for k, v in params.items():
-        if isinstance(v, tuple): v = "_".join(str(x) for x in v)
-        elif isinstance(v, bool): v = "T" if v else "F"
-        elif isinstance(v, float): v = f"{v:.3f}"
+        if isinstance(v, tuple):
+            v = "_".join(str(x) for x in v)
+        elif isinstance(v, bool):
+            v = "T" if v else "F"
+        elif isinstance(v, float):
+            v = f"{v:.3f}"
         parts.append(f"{k}={v}")
     return ", ".join(parts)
 
@@ -62,10 +74,14 @@ def _params_to_str(params):
 def _save_results_csv(results, path):
     rows = []
     for r in results:
-        row = {"strategy": r.get("strategy", ""), "params": json.dumps(r.get("params", {}), ensure_ascii=False, default=_jsonable)}
+        row = {
+            "strategy": r.get("strategy", ""),
+            "params": json.dumps(r.get("params", {}), ensure_ascii=False, default=_jsonable),
+        }
         for period in ["train", "val", "test"]:
             m = r.get(f"{period}_metrics", {})
-            for k, v in m.items(): row[f"{period}_{k}"] = v
+            for k, v in m.items():
+                row[f"{period}_{k}"] = v
         rows.append(row)
     pd.DataFrame(rows).to_csv(path, index=False, encoding="utf-8-sig")
 
@@ -77,14 +93,30 @@ def _normalize_results(results):
             r = dict(r)
             for period in ["train", "val", "test"]:
                 r[f"{period}_metrics"] = {}
-                for k in ["sharpe", "sortino", "calmar", "max_drawdown", "cagr", "total_return", "volatility", "win_rate", "profit_factor", "skew", "kurtosis"]:
+                for k in [
+                    "sharpe",
+                    "sortino",
+                    "calmar",
+                    "max_drawdown",
+                    "cagr",
+                    "total_return",
+                    "volatility",
+                    "win_rate",
+                    "profit_factor",
+                    "skew",
+                    "kurtosis",
+                ]:
                     col = f"{period}_{k}"
                     if col in r:
-                        try: r[f"{period}_metrics"][k] = float(r[col])
-                        except (ValueError, TypeError): r[f"{period}_metrics"][k] = -99
+                        try:
+                            r[f"{period}_metrics"][k] = float(r[col])
+                        except (ValueError, TypeError):
+                            r[f"{period}_metrics"][k] = -99
             if "params" in r and isinstance(r["params"], str):
-                try: r["params"] = json.loads(r["params"])
-                except Exception: r["params"] = {}
+                try:
+                    r["params"] = json.loads(r["params"])
+                except Exception:
+                    r["params"] = {}
         normalized.append(r)
     return normalized
 
@@ -94,16 +126,23 @@ def run_single_experiment(strategy_name, params, data, df, periods, cost_bps=1.0
         strategy = get_strategy(strategy_name)
         positions = strategy.run(data, **params)
     except Exception as e:
-        return {"strategy": strategy_name, "params": params, "error": str(e),
-                "train_metrics": {}, "val_metrics": {}, "test_metrics": {}}
+        return {
+            "strategy": strategy_name,
+            "params": params,
+            "error": str(e),
+            "train_metrics": {},
+            "val_metrics": {},
+            "test_metrics": {},
+        }
     prices = df["close"]
-    results = {"strategy": strategy_name, "params": params,
-               "train_metrics": {}, "val_metrics": {}, "test_metrics": {}}
+    results = {"strategy": strategy_name, "params": params, "train_metrics": {}, "val_metrics": {}, "test_metrics": {}}
     for pname, (start, end) in periods.items():
         try:
-            pp = positions.loc[start:end]; pr = prices.loc[start:end]
+            pp = positions.loc[start:end]
+            pr = prices.loc[start:end]
             if len(pp) == 0 or pp.abs().sum() == 0:
-                results[f"{pname}_metrics"] = {"sharpe": -99}; continue
+                results[f"{pname}_metrics"] = {"sharpe": -99}
+                continue
             bt = backtest(pp, pr, cost_bps=cost_bps)
             results[f"{pname}_metrics"] = evaluate(bt["returns"])
         except Exception:
@@ -111,9 +150,19 @@ def run_single_experiment(strategy_name, params, data, df, periods, cost_bps=1.0
     return results
 
 
-def run_search(ticker="GLD", strategies=None, cost_bps=1.0, workers=1,
-               quick=False, top_n=50, start="2004-01-01", end=None,
-               robust=True, robust_frac=0.2, use_cache=True):
+def run_search(
+    ticker="GLD",
+    strategies=None,
+    cost_bps=1.0,
+    workers=1,
+    quick=False,
+    top_n=50,
+    start="2004-01-01",
+    end=None,
+    robust=True,
+    robust_frac=0.2,
+    use_cache=True,
+):
     """Run exhaustive strategy search for any ticker.
 
     Args:
@@ -138,7 +187,8 @@ def run_search(ticker="GLD", strategies=None, cost_bps=1.0, workers=1,
     data, df = prepare_data(ticker, start=start, end=end, use_cache=use_cache)
     prices = df["close"]
     n = len(df)
-    split1 = int(n * 0.6); split2 = int(n * 0.8)
+    split1 = int(n * 0.6)
+    split2 = int(n * 0.8)
     periods = {
         "train": (df.index[0], df.index[split1]),
         "val": (df.index[split1], df.index[split2]),
@@ -152,7 +202,11 @@ def run_search(ticker="GLD", strategies=None, cost_bps=1.0, workers=1,
     if strategies is None:
         strategies = list(STRATEGY_REGISTRY.keys())
 
-    total = sum(len(get_strategy(s).get_param_combinations()[:5] if quick else get_strategy(s).get_param_combinations()) for s in strategies if s in STRATEGY_REGISTRY)
+    total = sum(
+        len(get_strategy(s).get_param_combinations()[:5] if quick else get_strategy(s).get_param_combinations())
+        for s in strategies
+        if s in STRATEGY_REGISTRY
+    )
     print(f"  Strategies: {len(strategies)}, Total experiments: {total}")
 
     all_results = []
@@ -162,23 +216,29 @@ def run_search(ticker="GLD", strategies=None, cost_bps=1.0, workers=1,
     pool = None
     if use_workers:
         import multiprocessing as mp
+
         ctx = mp.get_context("spawn")
-        pool = ctx.Pool(workers, initializer=_init_worker,
-                        initargs=(data, df, periods, cost_bps))
+        pool = ctx.Pool(workers, initializer=_init_worker, initargs=(data, df, periods, cost_bps))
 
     try:
         for sname in strategies:
-            if sname not in STRATEGY_REGISTRY: continue
+            if sname not in STRATEGY_REGISTRY:
+                continue
             s = get_strategy(sname)
             combos = s.get_param_combinations()
-            if quick: combos = combos[:5]
-            cat = "ML" if sname.startswith("ml_") else ("combo" if sname in ["ensemble","stacked","regime_aware"] else "classic")
+            if quick:
+                combos = combos[:5]
+            cat = (
+                "ML"
+                if sname.startswith("ml_")
+                else ("combo" if sname in ["ensemble", "stacked", "regime_aware"] else "classic")
+            )
             print(f"\n  [{cat}] {sname} ({len(combos)} params) ...")
 
             if pool is not None:
                 job = pool.imap_unordered(_worker_run, ((sname, p) for p in combos), chunksize=16)
                 for result in tqdm(job, desc=f"  {sname}", total=len(combos), leave=True):
-                    all_results.append(result)
+                    all_results.append(result)  # noqa: PERF402 - accumulates across strategies/checkpoints
             else:
                 for i, params in enumerate(tqdm(combos, desc=f"  {sname}", leave=True)):
                     result = run_single_experiment(sname, params, data, df, periods, cost_bps)
@@ -193,7 +253,7 @@ def run_search(ticker="GLD", strategies=None, cost_bps=1.0, workers=1,
             pool.join()
 
     elapsed = time.time() - t0
-    print(f"\n  Search complete! {len(all_results)} results in {elapsed/60:.1f} min")
+    print(f"\n  Search complete! {len(all_results)} results in {elapsed / 60:.1f} min")
 
     if not all_results:
         print("  WARNING: No experiments completed. Check strategy names and data.")
@@ -208,14 +268,24 @@ def run_search(ticker="GLD", strategies=None, cost_bps=1.0, workers=1,
     # Phase 3: Test set evaluation
     if top:
         best = top[0]
-        sname = best["strategy"]; params = best.get("params", {})
+        sname = best["strategy"]
+        params = best.get("params", {})
         strategy = get_strategy(sname)
         positions = strategy.run(data, **params)
-        test_m = evaluate(backtest(positions.loc[periods["test"][0]:periods["test"][1]],
-                                   prices.loc[periods["test"][0]:periods["test"][1]],
-                                   cost_bps=cost_bps)["returns"])
-        bh_m = evaluate(backtest(get_buy_and_hold(prices.loc[periods["test"][0]:periods["test"][1]]),
-                                 prices.loc[periods["test"][0]:periods["test"][1]], cost_bps=0)["returns"])
+        test_m = evaluate(
+            backtest(
+                positions.loc[periods["test"][0] : periods["test"][1]],
+                prices.loc[periods["test"][0] : periods["test"][1]],
+                cost_bps=cost_bps,
+            )["returns"]
+        )
+        bh_m = evaluate(
+            backtest(
+                get_buy_and_hold(prices.loc[periods["test"][0] : periods["test"][1]]),
+                prices.loc[periods["test"][0] : periods["test"][1]],
+                cost_bps=0,
+            )["returns"]
+        )
         print(f"\n  Best: {sname}")
         print(f"  Params: {_params_to_str(params)}")
         print(f"  Val Sharpe:   {best['val_metrics'].get('sharpe', 0):.4f}")
@@ -228,11 +298,15 @@ def run_search(ticker="GLD", strategies=None, cost_bps=1.0, workers=1,
     # Phase 4: Robustness check on the best parameters
     robustness = None
     if robust and best is not None:
-        print("\n  [Phase 4] Robustness check (perturbing optimal params by "
-              f"{robust_frac:.0%}) ...")
+        print(f"\n  [Phase 4] Robustness check (perturbing optimal params by {robust_frac:.0%}) ...")
         robustness = robustness_check(
-            data, df, periods, sname, params,
-            cost_bps=cost_bps, frac=robust_frac,
+            data,
+            df,
+            periods,
+            sname,
+            params,
+            cost_bps=cost_bps,
+            frac=robust_frac,
         )
         if robustness.get("error"):
             print(f"    Skipped: {robustness['error']}")
@@ -240,30 +314,40 @@ def run_search(ticker="GLD", strategies=None, cost_bps=1.0, workers=1,
             st = robustness["stats"]
             print(f"    Baseline val Sharpe: {robustness['baseline']:.4f}")
             print(f"    Neighbors evaluated: {robustness['n_neighbors']}")
-            print(f"    Neighbor val Sharpe: mean={st['mean']:.4f} "
-                  f"median={st['median']:.4f} min={st['min']:.4f} "
-                  f"max={st['max']:.4f} std={st['std']:.4f}")
-            print(f"    Degraded (<50% base): {robustness['pct_degrade']:.1%} | "
-                  f"Positive neighbors: {robustness['pct_positive']:.1%}")
-            print(f"    Robustness grade: {robustness['grade']} "
-                  f"({robustness['verdict']})"
-                  + ("  [ISOLATED PEAK - likely overfit]" if robustness["isolated_peak"] else ""))
-            pd.DataFrame([{
-                "strategy": sname,
-                "params": json.dumps(params, ensure_ascii=False, default=_jsonable),
-                "baseline_val_sharpe": robustness["baseline"],
-                "n_neighbors": robustness["n_neighbors"],
-                "neighbor_mean": st["mean"],
-                "neighbor_median": st["median"],
-                "neighbor_std": st["std"],
-                "neighbor_min": st["min"],
-                "neighbor_max": st["max"],
-                "pct_degrade": robustness["pct_degrade"],
-                "pct_positive": robustness["pct_positive"],
-                "grade": robustness["grade"],
-                "verdict": robustness["verdict"],
-                "isolated_peak": robustness["isolated_peak"],
-            }]).to_csv(RESULT_DIR / "robustness.csv", index=False, encoding="utf-8-sig")
+            print(
+                f"    Neighbor val Sharpe: mean={st['mean']:.4f} "
+                f"median={st['median']:.4f} min={st['min']:.4f} "
+                f"max={st['max']:.4f} std={st['std']:.4f}"
+            )
+            print(
+                f"    Degraded (<50% base): {robustness['pct_degrade']:.1%} | "
+                f"Positive neighbors: {robustness['pct_positive']:.1%}"
+            )
+            print(
+                f"    Robustness grade: {robustness['grade']} "
+                f"({robustness['verdict']})"
+                + ("  [ISOLATED PEAK - likely overfit]" if robustness["isolated_peak"] else "")
+            )
+            pd.DataFrame(
+                [
+                    {
+                        "strategy": sname,
+                        "params": json.dumps(params, ensure_ascii=False, default=_jsonable),
+                        "baseline_val_sharpe": robustness["baseline"],
+                        "n_neighbors": robustness["n_neighbors"],
+                        "neighbor_mean": st["mean"],
+                        "neighbor_median": st["median"],
+                        "neighbor_std": st["std"],
+                        "neighbor_min": st["min"],
+                        "neighbor_max": st["max"],
+                        "pct_degrade": robustness["pct_degrade"],
+                        "pct_positive": robustness["pct_positive"],
+                        "grade": robustness["grade"],
+                        "verdict": robustness["verdict"],
+                        "isolated_peak": robustness["isolated_peak"],
+                    }
+                ]
+            ).to_csv(RESULT_DIR / "robustness.csv", index=False, encoding="utf-8-sig")
             print(f"    Saved to {RESULT_DIR / 'robustness.csv'}")
 
     # Save summary
@@ -271,12 +355,15 @@ def run_search(ticker="GLD", strategies=None, cost_bps=1.0, workers=1,
     if top:
         rows = []
         for r in top:
-            row = {"strategy": r["strategy"], "params": json.dumps(r.get("params", {}), ensure_ascii=False, default=_jsonable)}
+            row = {
+                "strategy": r["strategy"],
+                "params": json.dumps(r.get("params", {}), ensure_ascii=False, default=_jsonable),
+            }
             for p in ["train", "val", "test"]:
                 m = r.get(f"{p}_metrics", {})
-                for k, v in m.items(): row[f"{p}_{k}"] = v
+                for k, v in m.items():
+                    row[f"{p}_{k}"] = v
             rows.append(row)
         pd.DataFrame(rows).to_csv(RESULT_DIR / "top_results.csv", index=False, encoding="utf-8-sig")
 
-    return {"all_results": all_results, "top_results": top, "best": best,
-            "robustness": robustness}
+    return {"all_results": all_results, "top_results": top, "best": best, "robustness": robustness}

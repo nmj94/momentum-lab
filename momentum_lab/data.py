@@ -1,6 +1,5 @@
 """data.py - Download market data for any ticker."""
 
-import os
 import warnings
 from pathlib import Path
 
