@@ -1,6 +1,7 @@
 """data.py - Download market data for any ticker."""
 
 import os
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -8,6 +9,11 @@ import pandas as pd
 import yfinance as yf
 
 DATA_DIR = Path(__file__).parent.parent / "data"
+
+
+def _load_cache(cache_path):
+    df = pd.read_csv(cache_path, index_col=0, parse_dates=True)
+    return df
 
 
 def download_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True):
@@ -21,17 +27,29 @@ def download_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True):
 
     Returns:
         pd.DataFrame with columns: open, high, low, close, volume.
+
+    Raises:
+        ValueError: If the download fails and no cached copy exists.
     """
     DATA_DIR.mkdir(exist_ok=True)
     cache_path = DATA_DIR / f"{ticker.replace('^', '_')}_daily.csv"
 
     if use_cache and cache_path.exists():
-        df = pd.read_csv(cache_path, index_col=0, parse_dates=True)
-        return df
+        return _load_cache(cache_path)
 
-    df = yf.download(ticker, start=start, end=end, auto_adjust=True, progress=False)
+    try:
+        df = yf.download(ticker, start=start, end=end, auto_adjust=True, progress=False)
+    except Exception as e:
+        # Temporary failure (e.g. Yahoo rate limit). Fall back to cached data.
+        if use_cache and cache_path.exists():
+            warnings.warn(f"Download failed ({e}); falling back to cached data.", RuntimeWarning)
+            return _load_cache(cache_path)
+        raise
 
     if df is None or df.empty:
+        if use_cache and cache_path.exists():
+            warnings.warn("Download returned no data; falling back to cached data.", RuntimeWarning)
+            return _load_cache(cache_path)
         raise ValueError(
             f"Download failed for '{ticker}'. "
             f"Possible causes: invalid ticker, delisted, or network error. "
