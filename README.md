@@ -149,6 +149,10 @@ Options:
   --strategies STR    Comma-separated strategy names
   --workers N         Parallel workers (default: 1)
   --cost BPS          Transaction cost in basis points (default: 1.0)
+  --slippage BPS      Additional slippage in basis points (default: 0)
+  --financing-rate R  Annual financing rate as a decimal (default: 0)
+  --borrow-bps BPS    Annual short borrow fee in basis points (default: 0)
+  --annualization N   Periods per year (252 stocks, 365 crypto)
   --start DATE        Data start date (default: 2004-01-01)
   --end DATE          Data end date (default: today)
   --refresh           Ignore cached data and re-download from Yahoo
@@ -189,7 +193,8 @@ pip install -e .
 
 ## Output
 
-After running, results are saved to `experiments/`:
+After running, results are saved to `experiments/<run_id>/`; each run is isolated:
+- `run_config.json` - Data range, cost model, parameters, and split configuration
 - `all_results.csv` - Every experiment with train/val/test metrics
 - `top_results.csv` - Top N strategies by validation Sharpe
 - `robustness.csv` - Robustness check summary for the best strategy

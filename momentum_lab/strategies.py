@@ -50,13 +50,17 @@ class BaseStrategy:
         pos = pos * position_size
         return pos
 
+    def is_valid_params(self, params):
+        """Return whether a parameter combination is internally coherent."""
+        return True
+
     def get_param_combinations(self):
         all_params = {**self.param_grid, **self.UNIVERSAL_PARAMS}
         keys = list(all_params.keys())
         if not keys:
             return [{}]
         vals = [all_params[k] for k in keys]
-        return [dict(zip(keys, v)) for v in product(*vals)]
+        return [params for params in (dict(zip(keys, v)) for v in product(*vals)) if self.is_valid_params(params)]
 
 
 class TSMOM(BaseStrategy):
@@ -89,6 +93,9 @@ class MACross(BaseStrategy):
         "long_short": [True, False],
         "ma_type": ["sma", "ema", "wma", "dema"],
     }
+
+    def is_valid_params(self, params):
+        return params["fast"] < params["slow"]
 
     def generate_positions(self, data, fast=10, slow=50, long_short=True, ma_type="sma"):
         close = data["close"]
@@ -124,6 +131,9 @@ class MACD(BaseStrategy):
         "mode": ["crossover", "histogram", "zero_filter"],
     }
 
+    def is_valid_params(self, params):
+        return params["fast"] < params["slow"]
+
     def generate_positions(self, data, fast=12, slow=26, signal=9, long_short=True, mode="crossover"):
         close = data["close"]
         macd_line = close.ewm(span=fast, adjust=False).mean() - close.ewm(span=slow, adjust=False).mean()
@@ -156,6 +166,13 @@ class RSI(BaseStrategy):
         "mode": ["momentum", "reversal"],
         "rsi_smooth": [1, 3, 5, 10],
     }
+
+    def is_valid_params(self, params):
+        # Momentum enters above buy_threshold and exits/shorts below
+        # sell_threshold; reversal uses the opposite ordering.
+        if params["mode"] == "momentum":
+            return params["buy_threshold"] >= params["sell_threshold"]
+        return params["buy_threshold"] <= params["sell_threshold"]
 
     def generate_positions(
         self, data, period=14, buy_threshold=50, sell_threshold=50, long_short=True, mode="momentum", rsi_smooth=1
@@ -250,15 +267,26 @@ class Donchian(BaseStrategy):
         if confirmation > 1:
             bu = bu.rolling(confirmation).sum() >= confirmation
             bd = bd.rolling(confirmation).sum() >= confirmation
-        pos = pd.Series(0.0, index=close.index)
-        pos[bu] = 1.0
-        if long_short:
-            pos[bd] = -1.0
+        # Donchian is a persistent breakout system: an entry remains active
+        # until an exit channel is breached.  The previous implementation
+        # emitted a one-bar entry signal, so the backtest immediately went
+        # flat on the following bar and made ``exit_period`` ineffective.
         ep = exit_period if exit_period > 0 else period
-        if exit_period > 0 and exit_period != period:
-            pos[(close < low.rolling(ep).min().shift(1)) & (pos == 1.0)] = 0.0
-            if long_short:
-                pos[(close > high.rolling(ep).max().shift(1)) & (pos == -1.0)] = 0.0
+        exit_upper = high.rolling(ep).max().shift(1)
+        exit_lower = low.rolling(ep).min().shift(1)
+        pos = pd.Series(0.0, index=close.index)
+        state = 0.0
+        for i in range(len(close)):
+            if (state > 0 and close.iloc[i] < exit_lower.iloc[i]) or (
+                state < 0 and close.iloc[i] > exit_upper.iloc[i]
+            ):
+                state = 0.0
+            if state == 0.0:
+                if pd.notna(bu.iloc[i]) and bool(bu.iloc[i]):
+                    state = 1.0
+                elif long_short and pd.notna(bd.iloc[i]) and bool(bd.iloc[i]):
+                    state = -1.0
+            pos.iloc[i] = state
         return pos
 
 
@@ -292,6 +320,9 @@ class TripleMA(BaseStrategy):
         "long_short": [True, False],
         "ma_type": ["sma", "ema", "wma"],
     }
+
+    def is_valid_params(self, params):
+        return params["fast"] < params["medium"] < params["slow"]
 
     def generate_positions(self, data, fast=10, medium=50, slow=200, long_short=True, ma_type="sma"):
         close = data["close"]
@@ -340,6 +371,9 @@ class Accel(BaseStrategy):
         "long_short": [True, False],
     }
 
+    def is_valid_params(self, params):
+        return params["short_lb"] < params["long_lb"]
+
     def generate_positions(self, data, short_lb=5, long_lb=21, threshold=0.0, long_short=True):
         close = data["close"]
         accel = close.pct_change(short_lb) - close.pct_change(long_lb)
@@ -359,6 +393,9 @@ class ZScore(BaseStrategy):
         "mode": ["momentum", "reversion"],
         "long_short": [True, False],
     }
+
+    def is_valid_params(self, params):
+        return params["entry_z"] >= params["exit_z"]
 
     def generate_positions(self, data, lookback=21, entry_z=1.0, exit_z=0.0, mode="momentum", long_short=True):
         close = data["close"]
@@ -496,25 +533,48 @@ class _MLBase(BaseStrategy):
         if feature_cols:
             feats = feats[feature_cols]
         fwd_ret = close.pct_change(forward).shift(-forward)
-        label = (fwd_ret > 0).astype(int)
+        # Preserve the unknown tail as NaN.  Casting the comparison directly
+        # to int turns those rows into class 0 and leaks fake labels into the
+        # final walk-forward training windows.
+        label = pd.Series(np.nan, index=close.index, dtype=float)
+        known = fwd_ret.notna()
+        label.loc[known] = (fwd_ret.loc[known] > 0).astype(float)
         feats = feats.copy()
         feats[label.isna() | feats.isna().any(axis=1)] = np.nan
         return feats, label
 
-    def _walk_forward(self, feats, label, model_fn, train_size=504, step=21, retrain=True):
+    def _walk_forward(self, feats, label, model_fn, train_size=504, step=21, retrain=True, forward=1, embargo=0):
+        """Generate predictions with purged expanding-window training.
+
+        A label at time ``t`` uses prices through ``t + forward``.  Therefore
+        rows whose label window overlaps the prediction start are removed from
+        the training sample.  ``embargo`` can add an extra gap when a caller
+        needs stricter separation between train and prediction windows.
+        """
         from sklearn.preprocessing import StandardScaler
 
+        if forward < 1 or embargo < 0:
+            raise ValueError("forward must be >= 1 and embargo must be >= 0")
+
         valid = ~(feats.isna().any(axis=1) | label.isna())
+        original_positions = np.flatnonzero(valid.to_numpy())
         feats = feats[valid]
         label = label[valid]
         preds = pd.Series(np.nan, index=feats.index)
         n = len(feats)
         i = train_size
         while i < n:
+            # Use original bar offsets rather than compressed valid-row
+            # offsets so intermittent feature gaps cannot weaken the purge.
+            prediction_bar = original_positions[i]
+            train_mask = original_positions[:i] + forward + embargo <= prediction_bar
+            if train_mask.sum() < 2:
+                i += step
+                continue
             scaler = StandardScaler()
-            X = scaler.fit_transform(feats.iloc[:i].values)
+            X = scaler.fit_transform(feats.iloc[:i].values[train_mask])
             model = model_fn()
-            model.fit(X, label.iloc[:i].values)
+            model.fit(X, label.iloc[:i].values[train_mask])
             pe = min(i + step, n)
             preds.iloc[i:pe] = model.predict(scaler.transform(feats.iloc[i:pe].values))
             if not retrain:
@@ -551,7 +611,7 @@ class MLLogReg(_MLBase):
         # Modern API: l1_ratio replaces the deprecated 'penalty' argument.
         l1_ratio = 1.0 if penalty == "l1" else 0.0
         fn = lambda: LogisticRegression(C=C, l1_ratio=l1_ratio, solver="saga", max_iter=2000, random_state=42)
-        return self._preds_to_positions(self._walk_forward(feats, label, fn, retrain=retrain), long_short)
+        return self._preds_to_positions(self._walk_forward(feats, label, fn, retrain=retrain, forward=forward), long_short)
 
 
 class MLRF(_MLBase):
@@ -590,7 +650,7 @@ class MLRF(_MLBase):
             random_state=42,
             n_jobs=1,
         )
-        return self._preds_to_positions(self._walk_forward(feats, label, fn, retrain=retrain), long_short)
+        return self._preds_to_positions(self._walk_forward(feats, label, fn, retrain=retrain, forward=forward), long_short)
 
 
 class MLXGB(_MLBase):
@@ -634,7 +694,7 @@ class MLXGB(_MLBase):
             eval_metric="logloss",
             verbosity=0,
         )
-        return self._preds_to_positions(self._walk_forward(feats, label, fn, retrain=retrain), long_short)
+        return self._preds_to_positions(self._walk_forward(feats, label, fn, retrain=retrain, forward=forward), long_short)
 
 
 class MLKNN(_MLBase):
@@ -656,7 +716,7 @@ class MLKNN(_MLBase):
 
         feats, label = self._prepare_data(data, lookback, forward)
         fn = lambda: KNeighborsClassifier(n_neighbors=n_neighbors, weights=weights, p=p)
-        return self._preds_to_positions(self._walk_forward(feats, label, fn, retrain=retrain), long_short)
+        return self._preds_to_positions(self._walk_forward(feats, label, fn, retrain=retrain, forward=forward), long_short)
 
 
 class MLSVM(_MLBase):
@@ -678,7 +738,9 @@ class MLSVM(_MLBase):
 
         feats, label = self._prepare_data(data, lookback, forward)
         fn = lambda: SVC(C=C, kernel=kernel, gamma=gamma, random_state=42)
-        return self._preds_to_positions(self._walk_forward(feats, label, fn, step=42, retrain=retrain), long_short)
+        return self._preds_to_positions(
+            self._walk_forward(feats, label, fn, step=42, retrain=retrain, forward=forward), long_short
+        )
 
 
 class MLNB(_MLBase):
@@ -696,7 +758,7 @@ class MLNB(_MLBase):
 
         feats, label = self._prepare_data(data, lookback, forward)
         fn = lambda: GaussianNB(var_smoothing=var_smoothing)
-        return self._preds_to_positions(self._walk_forward(feats, label, fn, retrain=retrain), long_short)
+        return self._preds_to_positions(self._walk_forward(feats, label, fn, retrain=retrain, forward=forward), long_short)
 
 
 class MLAda(_MLBase):
@@ -732,7 +794,7 @@ class MLAda(_MLBase):
             learning_rate=learning_rate,
             random_state=42,
         )
-        return self._preds_to_positions(self._walk_forward(feats, label, fn, retrain=retrain), long_short)
+        return self._preds_to_positions(self._walk_forward(feats, label, fn, retrain=retrain, forward=forward), long_short)
 
 
 class MLExtraTrees(_MLBase):
@@ -771,7 +833,7 @@ class MLExtraTrees(_MLBase):
             random_state=42,
             n_jobs=1,
         )
-        return self._preds_to_positions(self._walk_forward(feats, label, fn, retrain=retrain), long_short)
+        return self._preds_to_positions(self._walk_forward(feats, label, fn, retrain=retrain, forward=forward), long_short)
 
 
 class Ensemble(BaseStrategy):

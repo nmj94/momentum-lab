@@ -148,6 +148,10 @@ momentum-lab TICKER [选项]
   --strategies STR    指定策略名称（逗号分隔）
   --workers N         并行进程数（默认 1）
   --cost BPS          交易成本，基点（默认 1.0）
+  --slippage BPS      额外滑点，基点（默认 0）
+  --financing-rate R  年化融资利率（小数，默认 0）
+  --borrow-bps BPS    年化做空借券费，基点（默认 0）
+  --annualization N   年化周期数（股票 252，加密货币 365）
   --start DATE        数据开始日期（默认 2004-01-01）
   --end DATE          数据结束日期（默认今天）
   --refresh           忽略缓存，强制从 Yahoo 重新下载
@@ -187,7 +191,8 @@ pip install -e .
 
 ## 输出结果
 
-运行后，结果保存在 `experiments/` 目录：
+运行后，结果保存在 `experiments/<run_id>/` 目录，每次运行独立保存：
+- `run_config.json` - 数据区间、成本模型、参数和切分配置
 - `all_results.csv` - 所有实验结果（含训练/验证/测试指标）
 - `top_results.csv` - 按验证集 Sharpe 排序的前 N 个策略
 - `robustness.csv` - 最优策略的稳健性检验汇总

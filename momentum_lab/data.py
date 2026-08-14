@@ -25,6 +25,23 @@ def _slice_range(df, start, end):
     return df.loc[mask]
 
 
+def _cache_covers_range(df, start, end):
+    """Return whether a cached frame fully covers the requested date range."""
+    if df is None or df.empty:
+        return False
+    start_ts = pd.Timestamp(start)
+    # Yahoo's ``end`` bound is exclusive and market data is not published on
+    # weekends.  Compare against the nearest business-day boundaries while
+    # still slicing the user-facing result inclusively.
+    start_boundary = start_ts + pd.offsets.BDay(1) if start_ts.weekday() >= 5 else start_ts
+    end_ts = pd.Timestamp(end) if end else pd.Timestamp.now().normalize()
+    end_boundary = end_ts - pd.offsets.BDay(1)
+    tolerance = pd.Timedelta(days=7)
+    if df.index.min() > start_boundary + tolerance:
+        return False
+    return df.index.max() >= end_boundary - tolerance
+
+
 def download_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True):
     """Download OHLCV data for any ticker from Yahoo Finance.
 
@@ -43,25 +60,25 @@ def download_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True):
     DATA_DIR.mkdir(exist_ok=True)
     cache_path = DATA_DIR / f"{ticker.replace('^', '_')}_daily.csv"
 
-    if use_cache and cache_path.exists():
-        df = _slice_range(_load_cache(cache_path), start, end)
-        if len(df) > 0:
-            return df
-        # Cached file does not cover the requested range; try to refresh below.
+    cached = _load_cache(cache_path) if use_cache and cache_path.exists() else None
+    if cached is not None and _cache_covers_range(cached, start, end):
+        return _slice_range(cached, start, end)
+    # A partial cache must not be returned silently.  Refresh the requested
+    # window and merge it with the existing cache after a successful download.
 
     try:
         df = yf.download(ticker, start=start, end=end, auto_adjust=True, progress=False)
     except Exception as e:
         # Temporary failure (e.g. Yahoo rate limit). Fall back to cached data.
-        if use_cache and cache_path.exists():
+        if cached is not None and _cache_covers_range(cached, start, end):
             warnings.warn(f"Download failed ({e}); falling back to cached data.", RuntimeWarning)
-            return _slice_range(_load_cache(cache_path), start, end)
+            return _slice_range(cached, start, end)
         raise
 
     if df is None or df.empty:
-        if use_cache and cache_path.exists():
+        if cached is not None and _cache_covers_range(cached, start, end):
             warnings.warn("Download returned no data; falling back to cached data.", RuntimeWarning)
-            return _slice_range(_load_cache(cache_path), start, end)
+            return _slice_range(cached, start, end)
         raise ValueError(
             f"Download failed for '{ticker}'. "
             f"Possible causes: invalid ticker, delisted, or network error. "
@@ -78,9 +95,20 @@ def download_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True):
     df = df.dropna()
 
     if use_cache:
+        if cached is not None:
+            # Keep previously downloaded history instead of overwriting it
+            # with the newly requested window.
+            df = pd.concat([cached, df]).sort_index()
+            df = df[~df.index.duplicated(keep="last")]
         df.to_csv(cache_path)
 
-    return df
+    # The provider may return a narrower range than requested (for example
+    # for a newly listed or delisted symbol).  Surface that fact instead of
+    # handing a partial sample to the research engine.
+    if not _cache_covers_range(df, start, end):
+        raise ValueError(f"Downloaded data for '{ticker}' does not cover the requested range.")
+
+    return _slice_range(df, start, end)
 
 
 def compute_features(df):

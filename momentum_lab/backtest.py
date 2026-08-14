@@ -17,6 +17,10 @@ def backtest(
     vol_target: float | None = None,
     vol_lookback: int = 21,
     max_leverage: float = 2.0,
+    annualization: float = 252,
+    financing_rate: float = 0.0,
+    borrow_bps: float = 0.0,
+    slippage_bps: float = 0.0,
 ) -> dict:
     """Run a vectorized backtest.
 
@@ -27,25 +31,42 @@ def backtest(
         vol_target: If not None, scale positions to target annualized volatility.
         vol_lookback: Lookback for volatility calculation.
         max_leverage: Maximum leverage cap.
+        annualization: Number of return periods per year (252 for trading days,
+            365 for continuously traded daily assets).
+        financing_rate: Annual financing rate applied to held exposure, as a
+            decimal (for example, 0.05 for 5%).
+        borrow_bps: Annualized borrow fee for short exposure, in basis points.
+        slippage_bps: Additional transaction slippage in basis points.
 
     Returns:
         dict with 'returns', 'equity', 'trades' keys.
     """
+    if annualization <= 0:
+        raise ValueError("annualization must be positive")
+    if any(v < 0 for v in (cost_bps, borrow_bps, slippage_bps)):
+        raise ValueError("cost and slippage parameters cannot be negative")
+
     positions = positions.reindex(prices.index).ffill().fillna(0)
-    returns = prices.pct_change()
+    returns = prices.pct_change().fillna(0)
 
     if vol_target is not None:
-        realized_vol = returns.rolling(vol_lookback).std() * np.sqrt(252)
+        realized_vol = returns.rolling(vol_lookback).std() * np.sqrt(annualization)
         scaling = vol_target / (realized_vol + 1e-10)
         positions = positions * scaling
         positions = positions.clip(-max_leverage, max_leverage)
 
     trades = positions.diff().abs()
     trades.iloc[0] = abs(positions.iloc[0])
-    cost = trades * (cost_bps / 10000.0)
+    cost = trades * ((cost_bps + slippage_bps) / 10000.0)
 
-    strategy_returns = positions.shift(1) * returns - cost
-    strategy_returns = strategy_returns.fillna(0)
+    held_positions = positions.shift(1).fillna(0)
+    financing = held_positions.abs() * (financing_rate / annualization)
+    borrow = held_positions.clip(upper=0).abs() * (borrow_bps / 10000.0 / annualization)
+
+    # Fill the first price return before subtracting costs so an initial
+    # position incurs its entry cost on the first bar instead of being
+    # accidentally erased by a later fillna(0).
+    strategy_returns = held_positions * returns - cost - financing - borrow
 
     equity = (1 + strategy_returns).cumprod()
 
@@ -56,16 +77,24 @@ def backtest(
     }
 
 
-def evaluate(returns: pd.Series, risk_free_rate: float = RISK_FREE_RATE) -> dict:
+def evaluate(
+    returns: pd.Series,
+    risk_free_rate: float = RISK_FREE_RATE,
+    annualization: float = 252,
+) -> dict:
     """Compute comprehensive evaluation metrics.
 
     Args:
         returns: pd.Series of daily strategy returns.
+        risk_free_rate: Annualized risk-free rate as a decimal.
+        annualization: Number of return periods per year.
 
     Returns:
         dict of metrics: sharpe, sortino, calmar, max_drawdown, cagr,
         total_return, volatility, win_rate, profit_factor, skew, kurtosis.
     """
+    if annualization <= 0:
+        raise ValueError("annualization must be positive")
     returns = returns.dropna()
     if len(returns) < 2 or returns.std() < 1e-10:
         return {
@@ -85,10 +114,12 @@ def evaluate(returns: pd.Series, risk_free_rate: float = RISK_FREE_RATE) -> dict
             ]
         }
 
-    ann = 252
+    ann = annualization
     mean_ret = returns.mean()
     std_ret = returns.std()
     downside_std = returns[returns < 0].std()
+    if pd.isna(downside_std):
+        downside_std = 0.0
 
     sharpe = (mean_ret * ann - risk_free_rate) / (std_ret * np.sqrt(ann) + 1e-10)
     sortino = (mean_ret * ann - risk_free_rate) / (downside_std * np.sqrt(ann) + 1e-10)
@@ -125,7 +156,7 @@ def evaluate(returns: pd.Series, risk_free_rate: float = RISK_FREE_RATE) -> dict
 def evaluate_strategy(positions: pd.Series, prices: pd.Series, **bt_kwargs) -> dict:
     """Backtest + evaluate in one step."""
     result = backtest(positions, prices, **bt_kwargs)
-    result["metrics"] = evaluate(result["returns"])
+    result["metrics"] = evaluate(result["returns"], annualization=bt_kwargs.get("annualization", 252))
     return result
 
 

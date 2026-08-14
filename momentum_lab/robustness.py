@@ -41,7 +41,7 @@ def perturb_params(params: dict, frac: float = 0.2) -> list:
     return neighbors
 
 
-def _val_sharpe(strategy, data, prices, periods, params, cost_bps) -> float:
+def _val_sharpe(strategy, data, prices, periods, params, cost_bps, backtest_kwargs=None) -> float:
     try:
         positions = strategy.run(data, **params)
     except Exception:
@@ -51,12 +51,26 @@ def _val_sharpe(strategy, data, prices, periods, params, cost_bps) -> float:
     if len(pp) == 0 or pp.abs().sum() == 0:
         return -99.0
     try:
-        return evaluate(backtest(pp, pr, cost_bps=cost_bps)["returns"])["sharpe"]
+        kwargs = dict(backtest_kwargs or {})
+        return evaluate(
+            backtest(pp, pr, cost_bps=cost_bps, **kwargs)["returns"],
+            annualization=kwargs.get("annualization", 252),
+        )["sharpe"]
     except Exception:
         return -99.0
 
 
-def robustness_check(data, df, periods, sname, params, cost_bps=1.0, frac=0.2, min_neighbors=4):
+def robustness_check(
+    data,
+    df,
+    periods,
+    sname,
+    params,
+    cost_bps=1.0,
+    frac=0.2,
+    min_neighbors=4,
+    backtest_kwargs=None,
+):
     """Run neighborhood perturbation and summarize stability.
 
     Returns a dict with:
@@ -65,7 +79,7 @@ def robustness_check(data, df, periods, sname, params, cost_bps=1.0, frac=0.2, m
     strategy = get_strategy(sname)
     prices = df["close"]
 
-    base = _val_sharpe(strategy, data, prices, periods, params, cost_bps)
+    base = _val_sharpe(strategy, data, prices, periods, params, cost_bps, backtest_kwargs)
     neighbors = perturb_params(params, frac=frac)
     if len(neighbors) < min_neighbors:
         return {
@@ -76,7 +90,7 @@ def robustness_check(data, df, periods, sname, params, cost_bps=1.0, frac=0.2, m
             "grade": "N/A",
         }
 
-    vals = [_val_sharpe(strategy, data, prices, periods, nb, cost_bps) for nb in neighbors]
+    vals = [_val_sharpe(strategy, data, prices, periods, nb, cost_bps, backtest_kwargs) for nb in neighbors]
     vals = np.array([v for v in vals if v > -99], dtype=float)
     n_valid = len(vals)
 

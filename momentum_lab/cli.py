@@ -28,6 +28,12 @@ def main():
     parser.add_argument("--strategies", type=str, default=None, help="Comma-separated strategy names (default: all)")
     parser.add_argument("--workers", type=int, default=1, help="Parallel workers")
     parser.add_argument("--cost", type=float, default=1.0, help="Transaction cost in bps")
+    parser.add_argument("--slippage", type=float, default=0.0, help="Additional slippage in bps")
+    parser.add_argument("--financing-rate", type=float, default=0.0, help="Annual financing rate (decimal)")
+    parser.add_argument("--borrow-bps", type=float, default=0.0, help="Annual short borrow fee in bps")
+    parser.add_argument(
+        "--annualization", type=float, default=252, help="Return periods per year (252 stocks, 365 crypto)"
+    )
     parser.add_argument("--start", type=str, default="2004-01-01", help="Data start date")
     parser.add_argument("--end", type=str, default=None, help="Data end date (default: today)")
     parser.add_argument("--refresh", action="store_true", help="Ignore cached data and re-download from Yahoo")
@@ -63,6 +69,10 @@ def main():
         ticker=args.ticker,
         strategies=strategies,
         cost_bps=args.cost,
+        slippage_bps=args.slippage,
+        financing_rate=args.financing_rate,
+        borrow_bps=args.borrow_bps,
+        annualization=args.annualization,
         workers=args.workers,
         quick=args.quick,
         top_n=args.top,

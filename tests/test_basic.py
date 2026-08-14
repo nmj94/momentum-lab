@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 
 from momentum_lab.backtest import backtest, evaluate
-from momentum_lab.data import compute_features, download_data
+from momentum_lab.data import _cache_covers_range, compute_features, download_data
 from momentum_lab.strategies import STRATEGY_REGISTRY, get_strategy
 
 
@@ -54,6 +54,33 @@ def test_backtest():
     assert len(result["returns"]) == len(prices)
 
 
+def test_backtest_cost_model():
+    """Financing, borrow and slippage costs must reduce realized returns."""
+    prices = pd.Series([100.0, 110.0, 100.0])
+    long_positions = pd.Series([1.0, 1.0, 1.0])
+    short_positions = pd.Series([-1.0, -1.0, -1.0])
+    long_result = backtest(
+        long_positions,
+        prices,
+        cost_bps=0.0,
+        slippage_bps=10.0,
+        financing_rate=0.252,
+        annualization=252,
+    )
+    short_result = backtest(short_positions, prices, cost_bps=0.0, borrow_bps=252.0, annualization=252)
+    assert long_result["returns"].iloc[0] < 0
+    assert long_result["returns"].iloc[1] < 0.1
+    assert short_result["returns"].iloc[1] < -0.1
+
+
+def test_cache_coverage_respects_business_day_bounds():
+    idx = pd.date_range("2024-01-02", "2024-01-31", freq="B")
+    frame = pd.DataFrame({"close": 1.0}, index=idx)
+    assert _cache_covers_range(frame, "2024-01-06", "2024-02-01")
+    assert not _cache_covers_range(frame, "2023-12-01", "2024-02-01")
+    assert not _cache_covers_range(frame, "2024-01-01", None)
+
+
 def test_evaluate():
     """Test evaluation metrics."""
     returns = pd.Series(np.random.randn(252) * 0.01)
@@ -78,6 +105,15 @@ def test_get_strategy():
     assert s.name == "tsmom"
     combos = s.get_param_combinations()
     assert len(combos) > 0
+
+
+def test_parameter_constraints_remove_incoherent_grids():
+    ma_combos = get_strategy("ma_cross").get_param_combinations()
+    triple_combos = get_strategy("triple_ma").get_param_combinations()
+    accel_combos = get_strategy("acceleration").get_param_combinations()
+    assert all(p["fast"] < p["slow"] for p in ma_combos)
+    assert all(p["fast"] < p["medium"] < p["slow"] for p in triple_combos)
+    assert all(p["short_lb"] < p["long_lb"] for p in accel_combos)
 
 
 def test_tsmom_generate_positions():
@@ -131,6 +167,42 @@ def test_ml_features_present():
     # Walk-forward predictions cover only the out-of-sample tail window.
     assert len(pos) > 0
     assert len(pos) <= len(df)
+
+
+def test_ml_labels_keep_unknown_future_tail_nan():
+    df = _mk_data(600)
+    features = compute_features(pd.DataFrame(df))
+    data = {**df, "features": features}
+    from momentum_lab.strategies import get_strategy
+
+    _, label = get_strategy("ml_logreg")._prepare_data(data, lookback=21, forward=5)
+    assert label.tail(5).isna().all()
+
+
+def test_ml_walk_forward_purges_overlapping_labels():
+    from momentum_lab.strategies import get_strategy
+
+    feats = pd.DataFrame({"x": np.arange(30, dtype=float)})
+    label = pd.Series(np.arange(30) % 2, dtype=float)
+    fitted_sizes = []
+
+    class RecordingModel:
+        def fit(self, x, y):
+            fitted_sizes.append(len(y))
+            return self
+
+        def predict(self, x):
+            return np.zeros(len(x))
+
+    get_strategy("ml_logreg")._walk_forward(
+        feats,
+        label,
+        lambda: RecordingModel(),
+        train_size=10,
+        step=5,
+        forward=3,
+    )
+    assert fitted_sizes[0] == 8
 
 
 def test_perturb_params_int_float():
