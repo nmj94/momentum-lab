@@ -150,6 +150,7 @@ momentum-lab TICKER [选项]
   --cost BPS          交易成本，基点（默认 1.0）
   --start DATE        数据开始日期（默认 2004-01-01）
   --end DATE          数据结束日期（默认今天）
+  --refresh           忽略缓存，强制从 Yahoo 重新下载
   --top N             保留前 N 个结果（默认 50）
   --robust            对最优参数做稳健性检验（默认开启）
   --no-robust         跳过稳健性检验

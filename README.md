@@ -151,6 +151,7 @@ Options:
   --cost BPS          Transaction cost in basis points (default: 1.0)
   --start DATE        Data start date (default: 2004-01-01)
   --end DATE          Data end date (default: today)
+  --refresh           Ignore cached data and re-download from Yahoo
   --top N             Number of top results (default: 50)
   --robust            Run robustness check on best params (default: True)
   --no-robust         Skip the robustness check

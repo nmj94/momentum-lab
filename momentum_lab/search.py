@@ -113,7 +113,7 @@ def run_single_experiment(strategy_name, params, data, df, periods, cost_bps=1.0
 
 def run_search(ticker="GLD", strategies=None, cost_bps=1.0, workers=1,
                quick=False, top_n=50, start="2004-01-01", end=None,
-               robust=True, robust_frac=0.2):
+               robust=True, robust_frac=0.2, use_cache=True):
     """Run exhaustive strategy search for any ticker.
 
     Args:
@@ -127,6 +127,7 @@ def run_search(ticker="GLD", strategies=None, cost_bps=1.0, workers=1,
         end: Data end date. None = today.
         robust: If True, run a neighborhood robustness check on the best params.
         robust_frac: Perturbation fraction for the robustness check.
+        use_cache: If True, reuse cached OHLCV data when available.
 
     Returns:
         dict with 'all_results', 'top_results', 'best', 'robustness'.
@@ -134,7 +135,7 @@ def run_search(ticker="GLD", strategies=None, cost_bps=1.0, workers=1,
     RESULT_DIR.mkdir(exist_ok=True)
     print(f"momentum-lab: Searching optimal strategies for {ticker}")
 
-    data, df = prepare_data(ticker, start=start, end=end)
+    data, df = prepare_data(ticker, start=start, end=end, use_cache=use_cache)
     prices = df["close"]
     n = len(df)
     split1 = int(n * 0.6); split2 = int(n * 0.8)

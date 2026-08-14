@@ -18,6 +18,14 @@ def test_download_data():
     assert df["close"].iloc[0] > 0
 
 
+def test_download_data_range_respected():
+    """Cached data must be sliced to the requested [start, end] window."""
+    df = download_data("GLD", start="2023-01-01", end="2023-03-01", use_cache=True)
+    assert df.index[0] >= pd.Timestamp("2023-01-01")
+    assert df.index[-1] <= pd.Timestamp("2023-03-01")
+    assert len(df) > 0
+
+
 def test_compute_features():
     """Test feature computation."""
     df = pd.DataFrame({"close": np.random.randn(300).cumsum() + 100,

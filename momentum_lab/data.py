@@ -16,6 +16,16 @@ def _load_cache(cache_path):
     return df
 
 
+def _slice_range(df, start, end):
+    """Slice a DataFrame's DatetimeIndex to [start, end] inclusive."""
+    start_ts = pd.Timestamp(start)
+    end_ts = pd.Timestamp(end) if end else None
+    mask = df.index >= start_ts
+    if end_ts is not None:
+        mask &= df.index <= end_ts
+    return df.loc[mask]
+
+
 def download_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True):
     """Download OHLCV data for any ticker from Yahoo Finance.
 
@@ -35,7 +45,10 @@ def download_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True):
     cache_path = DATA_DIR / f"{ticker.replace('^', '_')}_daily.csv"
 
     if use_cache and cache_path.exists():
-        return _load_cache(cache_path)
+        df = _slice_range(_load_cache(cache_path), start, end)
+        if len(df) > 0:
+            return df
+        # Cached file does not cover the requested range; try to refresh below.
 
     try:
         df = yf.download(ticker, start=start, end=end, auto_adjust=True, progress=False)
@@ -43,13 +56,13 @@ def download_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True):
         # Temporary failure (e.g. Yahoo rate limit). Fall back to cached data.
         if use_cache and cache_path.exists():
             warnings.warn(f"Download failed ({e}); falling back to cached data.", RuntimeWarning)
-            return _load_cache(cache_path)
+            return _slice_range(_load_cache(cache_path), start, end)
         raise
 
     if df is None or df.empty:
         if use_cache and cache_path.exists():
             warnings.warn("Download returned no data; falling back to cached data.", RuntimeWarning)
-            return _load_cache(cache_path)
+            return _slice_range(_load_cache(cache_path), start, end)
         raise ValueError(
             f"Download failed for '{ticker}'. "
             f"Possible causes: invalid ticker, delisted, or network error. "
@@ -144,19 +157,20 @@ def compute_features(df):
     return feats
 
 
-def prepare_data(ticker="GLD", start="2004-01-01", end=None):
+def prepare_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True):
     """Download data + compute features, return unified data dict.
 
     Args:
         ticker: Yahoo Finance ticker.
         start: Start date.
         end: End date.
+        use_cache: If True, reuse the local CSV cache (default True).
 
     Returns:
         (data_dict, df) where data_dict has keys for strategy consumption
         and df is the raw OHLCV DataFrame.
     """
-    df = download_data(ticker, start=start, end=end)
+    df = download_data(ticker, start=start, end=end, use_cache=use_cache)
     feats = compute_features(df)
 
     data = {

@@ -29,6 +29,8 @@ def main():
     parser.add_argument("--cost", type=float, default=1.0, help="Transaction cost in bps")
     parser.add_argument("--start", type=str, default="2004-01-01", help="Data start date")
     parser.add_argument("--end", type=str, default=None, help="Data end date (default: today)")
+    parser.add_argument("--refresh", action="store_true",
+                        help="Ignore cached data and re-download from Yahoo")
     parser.add_argument("--top", type=int, default=50, help="Number of top results to keep")
     parser.add_argument("--robust", dest="robust", action="store_true", default=True,
                         help="Run robustness check on best params (default: True)")
@@ -63,6 +65,7 @@ def main():
         end=args.end,
         robust=args.robust,
         robust_frac=args.robust_frac,
+        use_cache=not args.refresh,
     )
 
 
