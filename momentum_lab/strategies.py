@@ -42,6 +42,9 @@ class BaseStrategy:
         raise NotImplementedError
 
     def run(self, data, **params):
+        close = data["close"]
+        if close.empty:
+            return close.astype(float).copy()
         position_size = params.pop("position_size", 1.0)
         signal_smooth = params.pop("signal_smooth", 0)
         pos = self.generate_positions(data, **params)

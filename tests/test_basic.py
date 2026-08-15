@@ -133,6 +133,14 @@ def test_get_strategy():
     assert len(combos) > 0
 
 
+def test_strategy_run_empty_data_returns_empty_positions():
+    """Strategies must handle an empty price series without indexing errors."""
+    close = pd.Series(dtype=float, index=pd.DatetimeIndex([]))
+    positions = get_strategy("heikin_ashi").run({"close": close})
+    assert positions.empty
+    assert positions.index.equals(close.index)
+
+
 def test_parameter_constraints_remove_incoherent_grids():
     ma_combos = get_strategy("ma_cross").get_param_combinations()
     triple_combos = get_strategy("triple_ma").get_param_combinations()
