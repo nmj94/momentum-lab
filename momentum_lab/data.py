@@ -63,7 +63,8 @@ def download_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True):
         raise ValueError("end must be on or after start")
 
     DATA_DIR.mkdir(exist_ok=True)
-    cache_path = DATA_DIR / f"{ticker.replace('^', '_')}_daily.csv"
+    safe_ticker = "".join(char if char.isalnum() or char in "._-" else "_" for char in str(ticker))
+    cache_path = DATA_DIR / f"{safe_ticker}_daily.csv"
 
     cached = _load_cache(cache_path) if use_cache and cache_path.exists() else None
     if cached is not None and _cache_covers_range(cached, start, end):

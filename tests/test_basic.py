@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from momentum_lab import data as data_module
 from momentum_lab.backtest import backtest, evaluate
 from momentum_lab.data import _cache_covers_range, compute_features, download_data
 from momentum_lab.search import _split_periods
@@ -33,6 +34,29 @@ def test_download_data_rejects_reversed_date_range():
     """Invalid date ranges must fail before consulting the cache or network."""
     with pytest.raises(ValueError, match="end must be on or after start"):
         download_data("GLD", start="2024-06-01", end="2024-01-01", use_cache=True)
+
+
+def test_download_data_sanitizes_cache_filename(tmp_path, monkeypatch):
+    """Ticker input must not allow cache files outside the data directory."""
+    data_dir = tmp_path / "data"
+    monkeypatch.setattr(data_module, "DATA_DIR", data_dir)
+    index = pd.date_range("2024-01-02", periods=3, freq="B")
+    downloaded = pd.DataFrame(
+        {
+            "Open": [1.0, 1.1, 1.2],
+            "High": [1.0, 1.1, 1.2],
+            "Low": [1.0, 1.1, 1.2],
+            "Close": [1.0, 1.1, 1.2],
+            "Volume": [100, 110, 120],
+        },
+        index=index,
+    )
+    monkeypatch.setattr(data_module.yf, "download", lambda *args, **kwargs: downloaded)
+
+    data_module.download_data("../../escape", start="2024-01-02", end="2024-01-04")
+
+    assert (data_dir / ".._.._escape_daily.csv").exists()
+    assert not (tmp_path / "escape_daily.csv").exists()
 
 
 def test_compute_features():
