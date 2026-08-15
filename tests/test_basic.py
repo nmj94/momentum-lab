@@ -183,6 +183,30 @@ def test_ml_features_present():
     assert len(pos) <= len(df)
 
 
+def test_ml_logreg_l1_uses_elasticnet(monkeypatch):
+    """The ML LogReg penalty grid must configure a real L1 estimator."""
+    from momentum_lab.strategies import get_strategy
+
+    close = pd.Series([100.0, 101.0, 99.0], dtype=float)
+    data = {
+        "close": close,
+        "features": pd.DataFrame({"feature": [0.0, 1.0, 0.5]}),
+    }
+    strategy = get_strategy("ml_logreg")
+    captured = {}
+
+    def capture_model(feats, label, model_fn, **kwargs):
+        captured["model"] = model_fn()
+        return pd.Series(np.nan, index=feats.index)
+
+    monkeypatch.setattr(strategy, "_walk_forward", capture_model)
+    strategy.generate_positions(data, lookback=21, forward=1, penalty="l1")
+
+    params = captured["model"].get_params()
+    assert params["penalty"] == "elasticnet"
+    assert params["l1_ratio"] == 1.0
+
+
 def test_ml_labels_keep_unknown_future_tail_nan():
     df = _mk_data(600)
     features = compute_features(pd.DataFrame(df))

@@ -608,9 +608,19 @@ class MLLogReg(_MLBase):
         from sklearn.linear_model import LogisticRegression
 
         feats, label = self._prepare_data(data, lookback, forward)
-        # Modern API: l1_ratio replaces the deprecated 'penalty' argument.
-        l1_ratio = 1.0 if penalty == "l1" else 0.0
-        fn = lambda: LogisticRegression(C=C, l1_ratio=l1_ratio, solver="saga", max_iter=2000, random_state=42)
+        # Use elastic-net with a full L1 ratio for the requested L1 variant;
+        # passing l1_ratio alone leaves LogisticRegression's default penalty
+        # as L2 and makes both grid branches equivalent.
+        model_penalty = "elasticnet" if penalty == "l1" else "l2"
+        l1_ratio = 1.0 if penalty == "l1" else None
+        fn = lambda: LogisticRegression(
+            C=C,
+            penalty=model_penalty,
+            l1_ratio=l1_ratio,
+            solver="saga",
+            max_iter=2000,
+            random_state=42,
+        )
         return self._preds_to_positions(self._walk_forward(feats, label, fn, retrain=retrain, forward=forward), long_short)
 
 
