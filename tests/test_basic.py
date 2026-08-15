@@ -6,6 +6,7 @@ import pytest
 
 from momentum_lab.backtest import backtest, evaluate
 from momentum_lab.data import _cache_covers_range, compute_features, download_data
+from momentum_lab.search import _split_periods
 from momentum_lab.strategies import STRATEGY_REGISTRY, get_strategy
 
 
@@ -93,6 +94,17 @@ def test_cache_coverage_respects_business_day_bounds():
     assert _cache_covers_range(frame, "2024-01-06", "2024-02-01")
     assert not _cache_covers_range(frame, "2023-12-01", "2024-02-01")
     assert not _cache_covers_range(frame, "2024-01-01", None)
+
+
+def test_search_periods_do_not_overlap():
+    idx = pd.date_range("2024-01-01", periods=10, freq="B")
+    periods = _split_periods(idx)
+    assert periods["train"][1] < periods["val"][0]
+    assert periods["val"][1] < periods["test"][0]
+    assert periods["train"][1] == idx[5]
+    assert periods["val"][0] == idx[6]
+    assert periods["val"][1] == idx[7]
+    assert periods["test"][0] == idx[8]
 
 
 def test_evaluate():

@@ -123,6 +123,21 @@ def _normalize_results(results):
     return normalized
 
 
+def _split_periods(index):
+    """Split an ordered index into non-overlapping train, validation, and test ranges."""
+    n = len(index)
+    if n < 3:
+        raise ValueError("at least 3 data points are required to split search periods")
+
+    split1 = max(1, min(int(n * 0.6), n - 2))
+    split2 = max(split1 + 1, min(int(n * 0.8), n - 1))
+    return {
+        "train": (index[0], index[split1 - 1]),
+        "val": (index[split1], index[split2 - 1]),
+        "test": (index[split2], index[-1]),
+    }
+
+
 def run_single_experiment(strategy_name, params, data, df, periods, cost_bps=1.0, **backtest_kwargs):
     try:
         strategy = get_strategy(strategy_name)
@@ -217,13 +232,7 @@ def run_search(
     data, df = prepare_data(ticker, start=start, end=end, use_cache=use_cache)
     prices = df["close"]
     n = len(df)
-    split1 = int(n * 0.6)
-    split2 = int(n * 0.8)
-    periods = {
-        "train": (df.index[0], df.index[split1]),
-        "val": (df.index[split1], df.index[split2]),
-        "test": (df.index[split2], df.index[-1]),
-    }
+    periods = _split_periods(df.index)
     metadata = {
         "run_id": run_id,
         "created_at": datetime.now(timezone.utc).isoformat(),
