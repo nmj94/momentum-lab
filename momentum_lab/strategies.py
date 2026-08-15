@@ -463,12 +463,16 @@ class Supertrend(BaseStrategy):
         lower = np.array(mid - multiplier * atr, dtype=float, copy=True)
         c = np.array(close, dtype=float, copy=True)
         n = len(c)
-        trend = np.ones(n, dtype=int)
+        trend = np.zeros(n, dtype=int)
         for i in range(1, n):
+            if not np.isfinite(upper[i - 1]) or not np.isfinite(lower[i - 1]):
+                continue
             if c[i] > upper[i - 1]:
                 trend[i] = 1
             elif c[i] < lower[i - 1]:
                 trend[i] = -1
+            elif trend[i - 1] == 0:
+                trend[i] = 1
             else:
                 trend[i] = trend[i - 1]
                 if trend[i] == 1 and lower[i] < lower[i - 1]:

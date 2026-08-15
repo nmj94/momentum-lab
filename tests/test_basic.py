@@ -369,12 +369,16 @@ def test_supertrend_matches_reference():
     atr = tr.rolling(atr_period).mean()
     upper = (hi + lo) / 2 + multiplier * atr
     lower = (hi + lo) / 2 - multiplier * atr
-    trend = pd.Series(1, index=c.index)
+    trend = pd.Series(0, index=c.index)
     for i in range(1, len(c)):
+        if pd.isna(upper.iloc[i - 1]) or pd.isna(lower.iloc[i - 1]):
+            continue
         if c.iloc[i] > upper.iloc[i - 1]:
             trend.iloc[i] = 1
         elif c.iloc[i] < lower.iloc[i - 1]:
             trend.iloc[i] = -1
+        elif trend.iloc[i - 1] == 0:
+            trend.iloc[i] = 1
         else:
             trend.iloc[i] = trend.iloc[i - 1]
             if trend.iloc[i] == 1 and lower.iloc[i] < lower.iloc[i - 1]:
@@ -384,4 +388,5 @@ def test_supertrend_matches_reference():
     ref = pd.Series(0.0, index=c.index)
     ref[trend == 1] = 1.0
     new = s.generate_positions(data, atr_period=atr_period, multiplier=multiplier, long_short=False)
+    assert (new.iloc[:atr_period] == 0).all()
     assert np.allclose(ref.to_numpy(), new.to_numpy())
