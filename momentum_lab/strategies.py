@@ -628,7 +628,9 @@ class MLLogReg(_MLBase):
             max_iter=2000,
             random_state=42,
         )
-        return self._preds_to_positions(self._walk_forward(feats, label, fn, retrain=retrain, forward=forward), long_short)
+        return self._preds_to_positions(
+            self._walk_forward(feats, label, fn, train_size=lookback, retrain=retrain, forward=forward), long_short
+        )
 
 
 class MLRF(_MLBase):
@@ -667,7 +669,9 @@ class MLRF(_MLBase):
             random_state=42,
             n_jobs=1,
         )
-        return self._preds_to_positions(self._walk_forward(feats, label, fn, retrain=retrain, forward=forward), long_short)
+        return self._preds_to_positions(
+            self._walk_forward(feats, label, fn, train_size=lookback, retrain=retrain, forward=forward), long_short
+        )
 
 
 class MLXGB(_MLBase):
@@ -711,7 +715,9 @@ class MLXGB(_MLBase):
             eval_metric="logloss",
             verbosity=0,
         )
-        return self._preds_to_positions(self._walk_forward(feats, label, fn, retrain=retrain, forward=forward), long_short)
+        return self._preds_to_positions(
+            self._walk_forward(feats, label, fn, train_size=lookback, retrain=retrain, forward=forward), long_short
+        )
 
 
 class MLKNN(_MLBase):
@@ -733,7 +739,9 @@ class MLKNN(_MLBase):
 
         feats, label = self._prepare_data(data, lookback, forward)
         fn = lambda: KNeighborsClassifier(n_neighbors=n_neighbors, weights=weights, p=p)
-        return self._preds_to_positions(self._walk_forward(feats, label, fn, retrain=retrain, forward=forward), long_short)
+        return self._preds_to_positions(
+            self._walk_forward(feats, label, fn, train_size=lookback, retrain=retrain, forward=forward), long_short
+        )
 
 
 class MLSVM(_MLBase):
@@ -756,7 +764,8 @@ class MLSVM(_MLBase):
         feats, label = self._prepare_data(data, lookback, forward)
         fn = lambda: SVC(C=C, kernel=kernel, gamma=gamma, random_state=42)
         return self._preds_to_positions(
-            self._walk_forward(feats, label, fn, step=42, retrain=retrain, forward=forward), long_short
+            self._walk_forward(feats, label, fn, train_size=lookback, step=42, retrain=retrain, forward=forward),
+            long_short,
         )
 
 
@@ -775,7 +784,9 @@ class MLNB(_MLBase):
 
         feats, label = self._prepare_data(data, lookback, forward)
         fn = lambda: GaussianNB(var_smoothing=var_smoothing)
-        return self._preds_to_positions(self._walk_forward(feats, label, fn, retrain=retrain, forward=forward), long_short)
+        return self._preds_to_positions(
+            self._walk_forward(feats, label, fn, train_size=lookback, retrain=retrain, forward=forward), long_short
+        )
 
 
 class MLAda(_MLBase):
@@ -811,7 +822,9 @@ class MLAda(_MLBase):
             learning_rate=learning_rate,
             random_state=42,
         )
-        return self._preds_to_positions(self._walk_forward(feats, label, fn, retrain=retrain, forward=forward), long_short)
+        return self._preds_to_positions(
+            self._walk_forward(feats, label, fn, train_size=lookback, retrain=retrain, forward=forward), long_short
+        )
 
 
 class MLExtraTrees(_MLBase):
@@ -850,7 +863,9 @@ class MLExtraTrees(_MLBase):
             random_state=42,
             n_jobs=1,
         )
-        return self._preds_to_positions(self._walk_forward(feats, label, fn, retrain=retrain, forward=forward), long_short)
+        return self._preds_to_positions(
+            self._walk_forward(feats, label, fn, train_size=lookback, retrain=retrain, forward=forward), long_short
+        )
 
 
 class Ensemble(BaseStrategy):

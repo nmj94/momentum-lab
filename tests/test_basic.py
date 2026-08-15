@@ -234,6 +234,26 @@ def test_ml_logreg_l1_uses_elasticnet(monkeypatch):
     assert params["l1_ratio"] == 1.0
 
 
+def test_ml_logreg_uses_configured_lookback_for_training_window(monkeypatch):
+    """ML lookback must control the walk-forward warm-up window."""
+    close = pd.Series([100.0, 101.0, 99.0], dtype=float)
+    data = {
+        "close": close,
+        "features": pd.DataFrame({"feature": [0.0, 1.0, 0.5]}),
+    }
+    strategy = get_strategy("ml_logreg")
+    captured = {}
+
+    def capture_model(feats, label, model_fn, **kwargs):
+        captured.update(kwargs)
+        return pd.Series(np.nan, index=feats.index)
+
+    monkeypatch.setattr(strategy, "_walk_forward", capture_model)
+    strategy.generate_positions(data, lookback=21, forward=1)
+
+    assert captured["train_size"] == 21
+
+
 def test_ml_labels_keep_unknown_future_tail_nan():
     df = _mk_data(600)
     features = compute_features(pd.DataFrame(df))
