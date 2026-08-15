@@ -1029,7 +1029,7 @@ class RegimeAware(BaseStrategy):
         vpn = self._vol_scale_pos(mom, vol_f, vol_target_normal, mom_threshold, 2.0)
         vpc = self._vol_scale_pos(mom, vol_f, vol_target_crisis, mom_threshold, 2.0)
         pos[is_trending & is_bullish & ~is_crisis] = vpn[is_trending & is_bullish & ~is_crisis]
-        pos[is_crisis & is_bullish] = vpn[is_crisis & is_bullish]
+        pos[is_crisis & is_bullish] = vpc[is_crisis & is_bullish]
         mask = ~is_trending & is_bullish & ~is_crisis
         if choppy_bull_mode == "full_vol":
             pos[mask] = vpn[mask]

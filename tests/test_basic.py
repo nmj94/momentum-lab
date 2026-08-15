@@ -199,6 +199,41 @@ def test_regime_aware():
     assert len(pos) == len(close)
 
 
+def test_regime_aware_uses_crisis_target_for_bullish_regime(monkeypatch):
+    """Bullish crisis bars must use the reduced crisis volatility target."""
+    n = 320
+    idx = pd.date_range("2020-01-01", periods=n, freq="B")
+    daily_returns = np.full(n, 0.001)
+    daily_returns[300:305] = [0.05, -0.05, 0.05, -0.05, 0.05]
+    close = pd.Series(100 * np.cumprod(1 + daily_returns), index=idx)
+    data = {"close": close, "high": close * 1.002, "low": close * 0.998}
+    strategy = get_strategy("regime_aware")
+    strategy._vol_scale_pos = lambda mom, vol, target, threshold, max_lev: pd.Series(target, index=mom.index)
+
+    positions = strategy.generate_positions(
+        data,
+        vol_fast=5,
+        crisis_vol_mult=2.0,
+        mom_lookback=21,
+        vol_target_normal=0.12,
+        vol_target_crisis=0.05,
+    )
+
+    daily_returns = close.pct_change()
+    crisis = (daily_returns.rolling(5).std() / (daily_returns.rolling(63).std() + 1e-10)) > 2.0
+    moving_average_fast = close.rolling(50).mean()
+    moving_average_slow = close.rolling(200).mean()
+    bullish = (
+        (close > moving_average_fast)
+        & (moving_average_fast > moving_average_slow)
+        & (close.pct_change(21) > 0)
+    )
+    mask = crisis & bullish
+
+    assert mask.any()
+    assert (positions[mask] == 0.05).all()
+
+
 def test_evaluate_zero_volatility():
     """Evaluate() must not blow up on zero-volatility returns."""
     const = pd.Series([0.01] * 100)
