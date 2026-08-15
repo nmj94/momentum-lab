@@ -46,6 +46,10 @@ def backtest(
     if any(v < 0 for v in (cost_bps, borrow_bps, slippage_bps)):
         raise ValueError("cost and slippage parameters cannot be negative")
 
+    if prices.empty:
+        empty = prices.astype(float).copy()
+        return {"returns": empty, "equity": empty.copy(), "trades": empty.copy()}
+
     positions = positions.reindex(prices.index).ffill().fillna(0)
     returns = prices.pct_change().fillna(0)
 

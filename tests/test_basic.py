@@ -54,6 +54,13 @@ def test_backtest():
     assert len(result["returns"]) == len(prices)
 
 
+def test_backtest_empty_prices_returns_empty_result():
+    empty = pd.Series(dtype=float, index=pd.DatetimeIndex([]))
+    result = backtest(empty, empty)
+    assert set(result) == {"returns", "equity", "trades"}
+    assert all(series.empty for series in result.values())
+
+
 def test_backtest_cost_model():
     """Financing, borrow and slippage costs must reduce realized returns."""
     prices = pd.Series([100.0, 110.0, 100.0])
