@@ -166,6 +166,13 @@ def test_evaluate_zero_volatility():
     assert evaluate(flat)["sharpe"] == 0.0
 
 
+def test_evaluate_handles_non_positive_equity():
+    """Leveraged losses must produce finite failure metrics, not NaN CAGR."""
+    metrics = evaluate(pd.Series([-0.5, -1.5, 0.1, 0.1, 0.1]))
+    assert metrics["cagr"] == -1.0
+    assert np.isfinite(metrics["calmar"])
+
+
 def test_ml_features_present():
     """ML strategies must work even when data already has 'features'."""
     from momentum_lab.strategies import get_strategy

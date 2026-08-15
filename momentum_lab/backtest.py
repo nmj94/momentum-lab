@@ -134,7 +134,13 @@ def evaluate(
 
     total_return = equity.iloc[-1] - 1
     years = len(returns) / ann
-    cagr = (1 + total_return) ** (1 / years) - 1 if years > 0 else 0
+    # Leveraged or short strategies can lose more than 100%, making the
+    # compounded return undefined once equity reaches zero or below.  Keep
+    # the report numeric and conservatively treat that path as a total loss.
+    if years > 0 and (equity > 0).all():
+        cagr = (1 + total_return) ** (1 / years) - 1
+    else:
+        cagr = -1.0
     calmar = cagr / (abs(max_dd) + 1e-10)
 
     win_rate = (returns > 0).mean()
