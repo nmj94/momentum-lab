@@ -57,6 +57,11 @@ def download_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True):
     Raises:
         ValueError: If the download fails and no cached copy exists.
     """
+    start_ts = pd.Timestamp(start)
+    end_ts = pd.Timestamp(end) if end is not None else None
+    if end_ts is not None and end_ts < start_ts:
+        raise ValueError("end must be on or after start")
+
     DATA_DIR.mkdir(exist_ok=True)
     cache_path = DATA_DIR / f"{ticker.replace('^', '_')}_daily.csv"
 

@@ -2,6 +2,7 @@
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from momentum_lab.backtest import backtest, evaluate
 from momentum_lab.data import _cache_covers_range, compute_features, download_data
@@ -25,6 +26,12 @@ def test_download_data_range_respected():
     assert df.index[0] >= pd.Timestamp("2023-01-01")
     assert df.index[-1] <= pd.Timestamp("2023-03-01")
     assert len(df) > 0
+
+
+def test_download_data_rejects_reversed_date_range():
+    """Invalid date ranges must fail before consulting the cache or network."""
+    with pytest.raises(ValueError, match="end must be on or after start"):
+        download_data("GLD", start="2024-06-01", end="2024-01-01", use_cache=True)
 
 
 def test_compute_features():
