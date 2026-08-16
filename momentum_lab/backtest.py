@@ -55,7 +55,9 @@ def backtest(
 
     if vol_target is not None:
         realized_vol = returns.rolling(vol_lookback).std() * np.sqrt(annualization)
-        scaling = vol_target / (realized_vol + 1e-10)
+        # Stay flat until the rolling volatility estimate is available.  Leaving
+        # the warm-up as NaN contaminates trades, returns, and cumulative equity.
+        scaling = (vol_target / (realized_vol + 1e-10)).fillna(0.0)
         positions = positions * scaling
         positions = positions.clip(-max_leverage, max_leverage)
 

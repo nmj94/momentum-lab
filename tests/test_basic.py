@@ -112,6 +112,19 @@ def test_backtest_cost_model():
     assert short_result["returns"].iloc[1] < -0.1
 
 
+def test_backtest_vol_target_warmup_stays_finite():
+    """Volatility targeting must keep its rolling warm-up flat and finite."""
+    prices = pd.Series([100.0, 101.0, 102.0, 103.0, 104.0])
+    positions = pd.Series(1.0, index=prices.index)
+
+    result = backtest(positions, prices, vol_target=0.1, vol_lookback=3)
+
+    assert result["returns"].notna().all()
+    assert result["equity"].notna().all()
+    assert result["trades"].notna().all()
+    assert result["returns"].iloc[:2].eq(0.0).all()
+
+
 def test_cache_coverage_respects_business_day_bounds():
     idx = pd.date_range("2024-01-02", "2024-01-31", freq="B")
     frame = pd.DataFrame({"close": 1.0}, index=idx)
