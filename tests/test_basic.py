@@ -120,6 +120,12 @@ def test_cache_coverage_respects_business_day_bounds():
     assert not _cache_covers_range(frame, "2024-01-01", None)
 
 
+def test_cache_coverage_rejects_truncated_end():
+    idx = pd.date_range("2024-01-02", "2024-01-24", freq="B")
+    frame = pd.DataFrame({"close": 1.0}, index=idx)
+    assert not _cache_covers_range(frame, "2024-01-01", "2024-02-01")
+
+
 def test_search_periods_do_not_overlap():
     idx = pd.date_range("2024-01-01", periods=10, freq="B")
     periods = _split_periods(idx)

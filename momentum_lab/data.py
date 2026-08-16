@@ -36,10 +36,12 @@ def _cache_covers_range(df, start, end):
     start_boundary = start_ts + pd.offsets.BDay(1) if start_ts.weekday() >= 5 else start_ts
     end_ts = pd.Timestamp(end) if end else pd.Timestamp.now().normalize()
     end_boundary = end_ts - pd.offsets.BDay(1)
+    # Allow a small start gap for exchange holidays that are not represented
+    # by pandas' generic business-day offset, but never accept a truncated end.
     tolerance = pd.Timedelta(days=7)
     if df.index.min() > start_boundary + tolerance:
         return False
-    return df.index.max() >= end_boundary - tolerance
+    return df.index.max() >= end_boundary
 
 
 def download_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True):
