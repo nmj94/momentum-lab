@@ -588,10 +588,14 @@ class _MLBase(BaseStrategy):
             if train_mask.sum() < 2:
                 i += step
                 continue
+            train_labels = label.iloc[:i].to_numpy()[train_mask]
+            if np.unique(train_labels).size < 2:
+                i += step
+                continue
             scaler = StandardScaler()
             X = scaler.fit_transform(feats.iloc[:i].values[train_mask])
             model = model_fn()
-            model.fit(X, label.iloc[:i].values[train_mask])
+            model.fit(X, train_labels)
             pe = min(i + step, n)
             preds.iloc[i:pe] = model.predict(scaler.transform(feats.iloc[i:pe].values))
             if not retrain:

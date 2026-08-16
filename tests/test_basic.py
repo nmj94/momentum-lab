@@ -385,6 +385,20 @@ def test_ml_walk_forward_purges_overlapping_labels():
     assert fitted_sizes[0] == 8
 
 
+def test_ml_walk_forward_skips_single_class_training_windows():
+    from momentum_lab.strategies import get_strategy
+
+    feats = pd.DataFrame({"x": np.arange(30, dtype=float)})
+    label = pd.Series(1.0, index=feats.index)
+
+    def unexpected_model():
+        pytest.fail("single-class training windows must be skipped")
+
+    preds = get_strategy("ml_logreg")._walk_forward(feats, label, unexpected_model, train_size=5, step=5)
+
+    assert preds.isna().all()
+
+
 def test_perturb_params_int_float():
     """Perturbation must nudge ints by +-1 and floats by a fraction."""
     from momentum_lab.robustness import perturb_params
