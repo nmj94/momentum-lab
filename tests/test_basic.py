@@ -270,6 +270,36 @@ def test_regime_aware_uses_crisis_target_for_bullish_regime(monkeypatch):
     assert (positions[mask] == 0.05).all()
 
 
+def test_regime_aware_uses_normal_target_for_choppy_bearish_shorts(monkeypatch):
+    """Choppy non-crisis shorts must use the normal target before halving."""
+    n = 320
+    idx = pd.date_range("2020-01-01", periods=n, freq="B")
+    close = pd.Series(200.0 - 0.25 * np.arange(n), index=idx)
+    data = {"close": close, "high": close * 1.002, "low": close * 0.998}
+    strategy = get_strategy("regime_aware")
+    monkeypatch.setattr(strategy, "_compute_adx", lambda high, low, close, period: pd.Series(0.0, index=close.index))
+    monkeypatch.setattr(
+        strategy,
+        "_vol_scale_pos",
+        lambda mom, vol, target, threshold, max_lev: pd.Series(
+            np.where(mom > threshold, target, np.where(mom < -threshold, -target, 0.0)), index=mom.index
+        ),
+    )
+
+    positions = strategy.generate_positions(
+        data,
+        vol_fast=5,
+        crisis_vol_mult=2.0,
+        mom_lookback=21,
+        vol_target_normal=0.12,
+        vol_target_crisis=0.05,
+        bearish_mode="short",
+        fast_exit_days=0,
+    )
+
+    assert positions.iloc[-1] == -0.06
+
+
 def test_evaluate_zero_volatility():
     """Evaluate() must not blow up on zero-volatility returns."""
     const = pd.Series([0.01] * 100)

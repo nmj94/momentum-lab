@@ -1055,7 +1055,7 @@ class RegimeAware(BaseStrategy):
             pos[mask] = vpn[mask]
         mask = ~is_trending & is_bearish & ~is_crisis
         if bearish_mode == "short":
-            pos[mask] = vpc[mask] * 0.5
+            pos[mask] = vpn[mask] * 0.5
         pos[is_crisis & ~is_bullish] = vpc[is_crisis & ~is_bullish] * 0.3
         if fast_exit_days > 0 and fast_exit_threshold < 0:
             fr = close.pct_change(fast_exit_days)
