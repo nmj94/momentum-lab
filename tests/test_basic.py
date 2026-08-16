@@ -305,8 +305,9 @@ def test_ml_features_present():
     assert len(pos) <= len(df)
 
 
-def test_ml_logreg_l1_uses_elasticnet(monkeypatch):
-    """The ML LogReg penalty grid must configure a real L1 estimator."""
+@pytest.mark.parametrize(("penalty", "expected_ratio"), [("l1", 1.0), ("l2", 0.0)])
+def test_ml_logreg_penalties_use_elasticnet(monkeypatch, penalty, expected_ratio):
+    """The ML LogReg penalty grid must configure explicit elastic-net ratios."""
     from momentum_lab.strategies import get_strategy
 
     close = pd.Series([100.0, 101.0, 99.0], dtype=float)
@@ -322,11 +323,12 @@ def test_ml_logreg_l1_uses_elasticnet(monkeypatch):
         return pd.Series(np.nan, index=feats.index)
 
     monkeypatch.setattr(strategy, "_walk_forward", capture_model)
-    strategy.generate_positions(data, lookback=21, forward=1, penalty="l1")
+    strategy.generate_positions(data, lookback=21, forward=1, penalty=penalty)
 
     params = captured["model"].get_params()
-    assert params["penalty"] == "elasticnet"
-    assert params["l1_ratio"] == 1.0
+    assert params["l1_ratio"] == expected_ratio
+    if params["penalty"] != "deprecated":
+        assert params["penalty"] == "elasticnet"
 
 
 def test_ml_logreg_uses_configured_lookback_for_training_window(monkeypatch):
