@@ -131,8 +131,11 @@ def evaluate(
     sortino = (mean_ret * ann - risk_free_rate) / (downside_std * np.sqrt(ann) + 1e-10)
 
     equity = (1 + returns).cumprod()
-    drawdown = equity / equity.cummax() - 1
+    equity_peak = equity.cummax()
+    drawdown = equity / equity_peak.where(equity_peak != 0) - 1
     max_dd = drawdown.min()
+    if pd.isna(max_dd):
+        max_dd = -1.0
 
     total_return = equity.iloc[-1] - 1
     years = len(returns) / ann

@@ -380,6 +380,13 @@ def test_evaluate_handles_non_positive_equity():
     assert np.isfinite(metrics["calmar"])
 
 
+def test_evaluate_handles_exact_total_loss():
+    """An equity curve that reaches exactly zero must keep drawdown metrics finite."""
+    metrics = evaluate(pd.Series([-1.0, 0.1, 0.1]))
+    assert metrics["max_drawdown"] == -1.0
+    assert np.isfinite(metrics["calmar"])
+
+
 def test_ml_features_present():
     """ML strategies must work even when data already has 'features'."""
     from momentum_lab.strategies import get_strategy
