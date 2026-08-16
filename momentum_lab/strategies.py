@@ -434,6 +434,8 @@ class HeikinAshi(BaseStrategy):
 
     def generate_positions(self, data, smooth=1, long_short=True, confirmation=1):
         close = data["close"]
+        if close.empty:
+            return close.astype(float).copy()
         op = data.get("open", close)
         hi = data.get("high", close)
         lo = data.get("low", close)

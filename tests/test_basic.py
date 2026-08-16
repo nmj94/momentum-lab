@@ -208,6 +208,14 @@ def test_strategy_run_empty_data_returns_empty_positions():
     assert positions.index.equals(close.index)
 
 
+def test_heikin_ashi_generate_positions_empty_data_returns_empty_series():
+    """Heikin-Ashi's lower-level signal method must handle empty input too."""
+    close = pd.Series(dtype=float, index=pd.DatetimeIndex([]))
+    positions = get_strategy("heikin_ashi").generate_positions({"close": close})
+    assert positions.empty
+    assert positions.index.equals(close.index)
+
+
 def test_parameter_constraints_remove_incoherent_grids():
     ma_combos = get_strategy("ma_cross").get_param_combinations()
     triple_combos = get_strategy("triple_ma").get_param_combinations()
