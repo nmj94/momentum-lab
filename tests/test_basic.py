@@ -210,6 +210,25 @@ def test_zscore_holds_positions_until_exit_threshold():
     assert reversion.tolist() == [0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0]
 
 
+def test_stacked_stays_flat_until_filters_are_ready():
+    """Stacked filtering must not treat unavailable warm-up values as passes."""
+    idx = pd.date_range("2020-01-01", periods=80, freq="B")
+    close = pd.Series(np.arange(100.0, 180.0), index=idx)
+
+    positions = get_strategy("stacked").generate_positions(
+        {"close": close},
+        momentum_lb=10,
+        ma_filter=50,
+        base_strategy="tsmom",
+        base_lookback=5,
+        long_short=False,
+        exit_on_neg=True,
+    )
+
+    assert positions.iloc[:49].eq(0.0).all()
+    assert positions.iloc[49:].eq(1.0).all()
+
+
 def test_dual_momentum_keeps_zero_return_flat():
     """Zero momentum must remain neutral when the threshold is zero."""
     close = pd.Series([100.0, 100.0, 99.0, 99.0])

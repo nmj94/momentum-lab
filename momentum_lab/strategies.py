@@ -979,7 +979,7 @@ class Stacked(BaseStrategy):
         ma = close.rolling(ma_filter).mean()
         pos = base.copy()
         if exit_on_neg:
-            pos[(mom <= 0) | (close < ma)] = 0.0
+            pos[(mom.isna()) | (ma.isna()) | (mom <= 0) | (close < ma)] = 0.0
         return pos
 
 
