@@ -362,7 +362,8 @@ class VolScale(BaseStrategy):
         raw = pd.Series(0.0, index=close.index)
         raw[ret > threshold] = 1.0
         raw[ret < -threshold] = -1.0
-        return (raw * (vol_target / (vol + 1e-10))).clip(-2.0, 2.0)
+        scaling = (vol_target / (vol + 1e-10)).fillna(0.0)
+        return (raw * scaling).clip(-2.0, 2.0)
 
 
 class Accel(BaseStrategy):

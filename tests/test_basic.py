@@ -125,6 +125,17 @@ def test_backtest_vol_target_warmup_stays_finite():
     assert result["returns"].iloc[:2].eq(0.0).all()
 
 
+def test_vol_scale_stays_flat_until_volatility_ready():
+    """Volatility-scaled strategy positions must stay finite during warm-up."""
+    close = pd.Series(np.arange(100.0, 112.0))
+    positions = get_strategy("vol_scale_mom").generate_positions(
+        {"close": close}, lookback=5, vol_lookback=3, vol_target=0.15
+    )
+
+    assert positions.notna().all()
+    assert positions.iloc[:3].eq(0.0).all()
+
+
 def test_cache_coverage_respects_business_day_bounds():
     idx = pd.date_range("2024-01-02", "2024-01-31", freq="B")
     frame = pd.DataFrame({"close": 1.0}, index=idx)
