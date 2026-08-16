@@ -49,6 +49,8 @@ def backtest(
     if prices.empty:
         empty = prices.astype(float).copy()
         return {"returns": empty, "equity": empty.copy(), "trades": empty.copy()}
+    if not np.isfinite(prices.to_numpy(dtype=float)).all() or (prices <= 0).any():
+        raise ValueError("prices must be finite and positive")
 
     positions = positions.reindex(prices.index).ffill().fillna(0)
     returns = prices.pct_change().fillna(0)

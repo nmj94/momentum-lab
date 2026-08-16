@@ -94,6 +94,16 @@ def test_backtest_empty_prices_returns_empty_result():
     assert all(series.empty for series in result.values())
 
 
+@pytest.mark.parametrize("invalid_prices", [[100.0, 0.0, 101.0], [100.0, np.nan, 101.0]])
+def test_backtest_rejects_invalid_prices(invalid_prices):
+    """Invalid prices must not produce non-finite backtest outputs."""
+    prices = pd.Series(invalid_prices)
+    positions = pd.Series(1.0, index=prices.index)
+
+    with pytest.raises(ValueError, match="prices must be finite and positive"):
+        backtest(positions, prices)
+
+
 def test_backtest_cost_model():
     """Financing, borrow and slippage costs must reduce realized returns."""
     prices = pd.Series([100.0, 110.0, 100.0])
