@@ -5,6 +5,7 @@ import pandas as pd
 import pytest
 
 from momentum_lab import data as data_module
+from momentum_lab import search as search_module
 from momentum_lab.backtest import backtest, evaluate
 from momentum_lab.data import _cache_covers_range, compute_features, download_data
 from momentum_lab.search import _split_periods
@@ -159,6 +160,18 @@ def test_search_periods_do_not_overlap():
     assert periods["val"][0] == idx[6]
     assert periods["val"][1] == idx[7]
     assert periods["test"][0] == idx[8]
+
+
+def test_run_search_rejects_parent_directory_run_id(tmp_path, monkeypatch):
+    """Run artifacts must stay inside the configured results directory."""
+    monkeypatch.setattr(
+        search_module,
+        "prepare_data",
+        lambda *args, **kwargs: pytest.fail("invalid run_id must be rejected before data access"),
+    )
+
+    with pytest.raises(ValueError, match="run_id must be a single directory name"):
+        search_module.run_search(ticker="GLD", result_dir=tmp_path, run_id="..")
 
 
 def test_evaluate():

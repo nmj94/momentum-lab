@@ -216,7 +216,7 @@ def run_search(
     base_result_dir = Path(result_dir) if result_dir is not None else RESULT_DIR
     safe_ticker = str(ticker).replace("/", "_").replace("^", "_")
     run_id = run_id or f"{safe_ticker}_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{uuid4().hex[:8]}"
-    if Path(run_id).name != run_id:
+    if run_id in {".", ".."} or Path(run_id).name != run_id:
         raise ValueError("run_id must be a single directory name")
     run_dir = base_result_dir / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
