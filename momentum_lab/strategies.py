@@ -310,7 +310,7 @@ class DualMomentum(BaseStrategy):
         pos = pd.Series(0.0, index=close.index)
         pos[ret > abs_threshold] = 1.0
         if long_short:
-            pos[ret <= -abs_threshold] = -1.0
+            pos[ret < -abs_threshold] = -1.0
         return pos
 
 

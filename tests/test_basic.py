@@ -210,6 +210,17 @@ def test_zscore_holds_positions_until_exit_threshold():
     assert reversion.tolist() == [0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0]
 
 
+def test_dual_momentum_keeps_zero_return_flat():
+    """Zero momentum must remain neutral when the threshold is zero."""
+    close = pd.Series([100.0, 100.0, 99.0, 99.0])
+
+    positions = get_strategy("dual_momentum").generate_positions(
+        {"close": close}, lookback=1, abs_threshold=0.0, long_short=True
+    )
+
+    assert positions.tolist() == [0.0, 0.0, -1.0, 0.0]
+
+
 def test_tsmom_generate_positions():
     """Test TSMOM signal generation."""
     close = pd.Series(np.random.randn(300).cumsum() + 100)
