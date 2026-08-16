@@ -180,6 +180,23 @@ def test_parameter_constraints_remove_incoherent_grids():
     assert all(p["short_lb"] < p["long_lb"] for p in accel_combos)
 
 
+def test_zscore_holds_positions_until_exit_threshold():
+    """Z-score entries persist until the configured exit or opposite signal."""
+    rising = pd.Series([100, 100, 100, 110, 108, 107, 106], dtype=float)
+    falling = pd.Series([100, 100, 100, 90, 92, 94, 95], dtype=float)
+    strategy = get_strategy("zscore")
+
+    momentum = strategy.generate_positions(
+        {"close": rising}, lookback=3, entry_z=0.5, exit_z=0.25, mode="momentum", long_short=False
+    )
+    reversion = strategy.generate_positions(
+        {"close": falling}, lookback=3, entry_z=0.5, exit_z=0.25, mode="reversion", long_short=False
+    )
+
+    assert momentum.tolist() == [0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0]
+    assert reversion.tolist() == [0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0]
+
+
 def test_tsmom_generate_positions():
     """Test TSMOM signal generation."""
     close = pd.Series(np.random.randn(300).cumsum() + 100)

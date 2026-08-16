@@ -404,16 +404,26 @@ class ZScore(BaseStrategy):
         close = data["close"]
         z = (close - close.rolling(lookback).mean()) / (close.rolling(lookback).std() + 1e-10)
         pos = pd.Series(0.0, index=close.index)
-        if mode == "momentum":
-            pos[z > entry_z] = 1.0
-            pos[z.abs() < exit_z] = 0.0
-            if long_short:
-                pos[z < -entry_z] = -1.0
-        else:
-            pos[z < -entry_z] = 1.0
-            pos[z.abs() < exit_z] = 0.0
-            if long_short:
-                pos[z > entry_z] = -1.0
+        state = 0.0
+        is_reversion = mode != "momentum"
+        for i, value in enumerate(z.to_numpy()):
+            if not np.isfinite(value):
+                pos.iloc[i] = state
+                continue
+            long_entry = value < -entry_z if is_reversion else value > entry_z
+            short_entry = value > entry_z if is_reversion else value < -entry_z
+            if state == 0.0:
+                if long_entry:
+                    state = 1.0
+                elif long_short and short_entry:
+                    state = -1.0
+            elif abs(value) <= exit_z:
+                state = 0.0
+            elif short_entry:
+                state = -1.0 if long_short else 0.0
+            elif state < 0 and long_entry:
+                state = 1.0
+            pos.iloc[i] = state
         return pos
 
 
