@@ -447,6 +447,33 @@ def test_ml_walk_forward_purges_overlapping_labels():
     assert fitted_sizes[0] == 8
 
 
+def test_ml_walk_forward_preserves_original_index():
+    from momentum_lab.strategies import get_strategy
+
+    idx = pd.date_range("2020-01-01", periods=30, freq="B")
+    feats = pd.DataFrame({"x": np.arange(30, dtype=float)}, index=idx)
+    feats.iloc[:3] = np.nan
+    label = pd.Series(np.arange(30) % 2, dtype=float, index=idx)
+
+    class RecordingModel:
+        def fit(self, x, y):
+            return self
+
+        def predict(self, x):
+            return np.zeros(len(x))
+
+    preds = get_strategy("ml_logreg")._walk_forward(
+        feats,
+        label,
+        lambda: RecordingModel(),
+        train_size=5,
+        step=5,
+    )
+
+    assert preds.index.equals(idx)
+    assert preds.iloc[:3].isna().all()
+
+
 def test_ml_walk_forward_skips_single_class_training_windows():
     from momentum_lab.strategies import get_strategy
 

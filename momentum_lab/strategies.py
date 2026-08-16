@@ -573,11 +573,12 @@ class _MLBase(BaseStrategy):
         if forward < 1 or embargo < 0:
             raise ValueError("forward must be >= 1 and embargo must be >= 0")
 
+        original_index = feats.index
         valid = ~(feats.isna().any(axis=1) | label.isna())
         original_positions = np.flatnonzero(valid.to_numpy())
         feats = feats[valid]
         label = label[valid]
-        preds = pd.Series(np.nan, index=feats.index)
+        preds = pd.Series(np.nan, index=original_index)
         n = len(feats)
         i = train_size
         while i < n:
@@ -597,11 +598,11 @@ class _MLBase(BaseStrategy):
             model = model_fn()
             model.fit(X, train_labels)
             pe = min(i + step, n)
-            preds.iloc[i:pe] = model.predict(scaler.transform(feats.iloc[i:pe].values))
+            preds.iloc[original_positions[i:pe]] = model.predict(scaler.transform(feats.iloc[i:pe].values))
             if not retrain:
                 rest = feats.iloc[pe:]
                 if len(rest) > 0:
-                    preds.iloc[pe:] = model.predict(scaler.transform(rest.values))
+                    preds.iloc[original_positions[pe:]] = model.predict(scaler.transform(rest.values))
                 break
             i = pe
         return preds
