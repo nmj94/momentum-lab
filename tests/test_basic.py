@@ -107,6 +107,41 @@ def test_download_data_rejected_range_is_not_cached(tmp_path, monkeypatch):
     assert not (data_dir / "GLD_daily.csv").exists()
 
 
+def test_download_data_accepts_late_listed_assets(tmp_path, monkeypatch):
+    """Assets listed after the requested start must warn, not hard-fail.
+
+    GLD IPO'd on 2004-11-18 while the module default start is 2004-01-01;
+    a hard coverage failure made the documented default unusable.
+    """
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    monkeypatch.setattr(data_module, "DATA_DIR", data_dir)
+    index = pd.date_range("2010-01-04", periods=5, freq="B")
+    monkeypatch.setattr(data_module.yf, "download", lambda *a, **k: _fake_yf_download(index))
+
+    with pytest.warns(RuntimeWarning, match="later than the requested start"):
+        df = data_module.download_data("GLD", start="2004-01-01", end="2010-01-08")
+
+    assert len(df) == 5
+    assert (data_dir / "GLD_daily.csv").exists()
+
+
+def test_download_data_accepts_future_end_dates(tmp_path, monkeypatch):
+    """A future ``end`` must resolve to the latest available history."""
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    monkeypatch.setattr(data_module, "DATA_DIR", data_dir)
+    now = pd.Timestamp.now().normalize()
+    # The newest bar a provider can finalize for an open-ended request.
+    last_complete = now - pd.offsets.BDay(2)
+    index = pd.date_range(end=last_complete, periods=3, freq="B")
+    monkeypatch.setattr(data_module.yf, "download", lambda *a, **k: _fake_yf_download(index))
+
+    df = data_module.download_data("GLD", start=str(index[0].date()), end="2099-01-01")
+
+    assert len(df) == 3
+
+
 def test_data_dir_env_override(tmp_path, monkeypatch):
     """MOMENTUM_LAB_DATA_DIR must win over the package-relative default."""
     import importlib

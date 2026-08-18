@@ -34,17 +34,32 @@ def _slice_range(df, start, end):
     return df.loc[mask]
 
 
-def _cache_covers_range(df, start, end):
-    """Return whether a cached frame fully covers the requested date range."""
-    if df is None or df.empty:
-        return False
+def _range_boundaries(start, end):
+    """Business-day adjusted [start, end] boundaries for coverage checks."""
     start_ts = pd.Timestamp(start)
     # Yahoo's ``end`` bound is exclusive and market data is not published on
     # weekends.  Compare against the nearest business-day boundaries while
     # still slicing the user-facing result inclusively.
     start_boundary = start_ts + pd.offsets.BDay(1) if start_ts.weekday() >= 5 else start_ts
-    end_ts = pd.Timestamp(end) if end else pd.Timestamp.now().normalize()
-    end_boundary = end_ts - pd.offsets.BDay(1)
+    now = pd.Timestamp.now().normalize()
+    end_ts = pd.Timestamp(end) if end else now
+    # A future ``end`` can never be covered by any download; cap it at today
+    # instead of failing on the maximal available history.
+    end_ts = min(end_ts, now)
+    # Open-ended or near-current requests get one extra business day of
+    # slack: providers emit a NaN placeholder row for the still-live
+    # session, so the newest complete bar can lag "now" by two sessions
+    # depending on timezone.  Explicitly historical ends stay strict.
+    open_ended = end is None or pd.Timestamp(end).normalize() >= now - pd.Timedelta(days=2)
+    slack = pd.offsets.BDay(2) if open_ended else pd.offsets.BDay(1)
+    return start_boundary, end_ts - slack
+
+
+def _cache_covers_range(df, start, end):
+    """Return whether a cached frame fully covers the requested date range."""
+    if df is None or df.empty:
+        return False
+    start_boundary, end_boundary = _range_boundaries(start, end)
     # Allow a small start gap for exchange holidays that are not represented
     # by pandas' generic business-day offset, but never accept a truncated end.
     tolerance = pd.Timedelta(days=7)
@@ -118,11 +133,22 @@ def download_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True):
         df = df[~df.index.duplicated(keep="last")]
 
     # The provider may return a narrower range than requested (for example
-    # for a newly listed or delisted symbol).  Surface that fact instead of
-    # handing a partial sample to the research engine.  Validate BEFORE
-    # persisting so a rejected window never contaminates the cache.
-    if not _cache_covers_range(df, start, end):
+    # for a newly listed or delisted symbol).  A truncated END is always a
+    # hard error: silently serving stale history would poison the research
+    # engine.  A late START, however, is usually legitimate - many assets
+    # are listed after the default 2004-01-01 start (GLD IPO 2004-11-18,
+    # BTC-USD 2014) and we cannot distinguish that from a provider gap
+    # locally, so downgrade it to a warning.  Validate BEFORE persisting so
+    # a rejected window never contaminates the cache.
+    start_boundary, end_boundary = _range_boundaries(start, end)
+    if df.index.max() < end_boundary:
         raise ValueError(f"Downloaded data for '{ticker}' does not cover the requested range.")
+    if df.index.min() > start_boundary + pd.Timedelta(days=7):
+        warnings.warn(
+            f"Data for '{ticker}' starts at {df.index.min().date()}, later than the requested "
+            f"start {pd.Timestamp(start).date()}; treating it as the earliest available history.",
+            RuntimeWarning,
+        )
 
     if use_cache:
         df.to_csv(cache_path)
