@@ -1,5 +1,6 @@
 """data.py - Download market data for any ticker."""
 
+import os
 import warnings
 from pathlib import Path
 
@@ -7,12 +8,20 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
-DATA_DIR = Path(__file__).parent.parent / "data"
+# Default to the repository-local data directory, but allow an environment
+# override: in a wheel install ``Path(__file__).parent.parent`` points at the
+# interpreter's site-packages parent, and we must not write market data there.
+DATA_DIR = Path(os.environ.get("MOMENTUM_LAB_DATA_DIR", str(Path(__file__).parent.parent / "data")))
 
 
 def _load_cache(cache_path):
-    df = pd.read_csv(cache_path, index_col=0, parse_dates=True)
-    return df
+    try:
+        return pd.read_csv(cache_path, index_col=0, parse_dates=True)
+    except (OSError, ValueError) as e:
+        # A corrupt or truncated cache file must not permanently brick every
+        # future download; treat it as a cache miss and re-download.
+        warnings.warn(f"Ignoring unreadable cache file {cache_path}: {e}", RuntimeWarning)
+        return None
 
 
 def _slice_range(df, start, end):
@@ -102,19 +111,21 @@ def download_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True):
     df.index = pd.to_datetime(df.index)
     df = df.dropna()
 
-    if use_cache:
-        if cached is not None:
-            # Keep previously downloaded history instead of overwriting it
-            # with the newly requested window.
-            df = pd.concat([cached, df]).sort_index()
-            df = df[~df.index.duplicated(keep="last")]
-        df.to_csv(cache_path)
+    if use_cache and cached is not None:
+        # Keep previously downloaded history instead of overwriting it
+        # with the newly requested window.
+        df = pd.concat([cached, df]).sort_index()
+        df = df[~df.index.duplicated(keep="last")]
 
     # The provider may return a narrower range than requested (for example
     # for a newly listed or delisted symbol).  Surface that fact instead of
-    # handing a partial sample to the research engine.
+    # handing a partial sample to the research engine.  Validate BEFORE
+    # persisting so a rejected window never contaminates the cache.
     if not _cache_covers_range(df, start, end):
         raise ValueError(f"Downloaded data for '{ticker}' does not cover the requested range.")
+
+    if use_cache:
+        df.to_csv(cache_path)
 
     return _slice_range(df, start, end)
 

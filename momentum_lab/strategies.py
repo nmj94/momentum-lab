@@ -57,13 +57,30 @@ class BaseStrategy:
         """Return whether a parameter combination is internally coherent."""
         return True
 
-    def get_param_combinations(self):
+    def iter_param_combinations(self):
+        """Yield valid parameter combinations one at a time.
+
+        The largest grids approach a million combinations; materializing
+        them as a list (as the previous implementation did) causes huge
+        memory spikes just to iterate or count.
+        """
         all_params = {**self.param_grid, **self.UNIVERSAL_PARAMS}
         keys = list(all_params.keys())
         if not keys:
-            return [{}]
+            yield {}
+            return
         vals = [all_params[k] for k in keys]
-        return [params for params in (dict(zip(keys, v)) for v in product(*vals)) if self.is_valid_params(params)]
+        for v in product(*vals):
+            params = dict(zip(keys, v))
+            if self.is_valid_params(params):
+                yield params
+
+    def count_param_combinations(self):
+        """Count valid parameter combinations in O(1) memory."""
+        return sum(1 for _ in self.iter_param_combinations())
+
+    def get_param_combinations(self):
+        return list(self.iter_param_combinations())
 
 
 class TSMOM(BaseStrategy):
@@ -929,7 +946,9 @@ class Ensemble(BaseStrategy):
                     data, period=int(parts[1]), num_std=float(parts[2]), long_short=long_short
                 )
             else:
-                continue
+                # Silently dropping members would shrink the vote pool and
+                # quietly change the meaning of vote_threshold.
+                raise ValueError(f"Unknown ensemble member strategy: '{s}'")
             signals.append(sig)
         if not signals:
             return pd.Series(0.0, index=close.index)
@@ -983,7 +1002,15 @@ class Stacked(BaseStrategy):
         ma = close.rolling(ma_filter).mean()
         pos = base.copy()
         if exit_on_neg:
-            pos[(mom.isna()) | (ma.isna()) | (mom <= 0) | (close < ma)] = 0.0
+            # Direction-aware trend filter: longs are dropped once the
+            # higher-timeframe momentum turns non-positive or price loses
+            # the filter MA, shorts once momentum turns non-negative or
+            # price reclaims the MA.  Warm-up (NaN) stays flat.  The old
+            # single-rule form zeroed shorts exactly while momentum was
+            # negative, i.e. only when shorts were supposed to be active.
+            stale = mom.isna() | ma.isna()
+            pos[(pos > 0) & (stale | (mom <= 0) | (close < ma))] = 0.0
+            pos[(pos < 0) & (stale | (mom >= 0) | (close > ma))] = 0.0
         return pos
 
 
@@ -1022,8 +1049,6 @@ class RegimeAware(BaseStrategy):
         fast_exit_days=5,
         fast_exit_threshold=-0.03,
         bearish_mode="cash",
-        position_size=2.0,
-        signal_smooth=0,
     ):
         close = data["close"]
         high = data.get("high", close)
@@ -1133,7 +1158,7 @@ def list_strategies():
     print(f"{'=' * 70}")
     total = 0
     for name, cls in STRATEGY_REGISTRY.items():
-        n = len(cls().get_param_combinations())
+        n = cls().count_param_combinations()
         cat = "ML" if name.startswith("ml_") else ("combo" if name in COMBO_STRATEGIES else "classic")
         print(f"  [{cat:>5s}] {name:>20s}: {n:>8d} params")
         total += n

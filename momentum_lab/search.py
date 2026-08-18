@@ -138,6 +138,26 @@ def _split_periods(index):
     }
 
 
+def _quick_sample(strategy, k=5):
+    """Pick ``k`` evenly spaced parameter combinations without materializing the grid.
+
+    Taking the first ``k`` combos biases the quick-mode sample toward the
+    smallest lookbacks (and, for most grids, long_short=True), which is not
+    representative of the search space.
+    """
+    total = strategy.count_param_combinations()
+    if total <= k:
+        return list(strategy.iter_param_combinations())
+    wanted = sorted({round(i * (total - 1) / (k - 1)) for i in range(k)})
+    picked = []
+    for i, combo in enumerate(strategy.iter_param_combinations()):
+        if i == wanted[len(picked)]:
+            picked.append(combo)
+            if len(picked) == len(wanted):
+                break
+    return picked
+
+
 def run_single_experiment(strategy_name, params, data, df, periods, cost_bps=1.0, **backtest_kwargs):
     try:
         strategy = get_strategy(strategy_name)
@@ -259,12 +279,13 @@ def run_search(
     if strategies is None:
         strategies = list(STRATEGY_REGISTRY.keys())
 
-    total = sum(
-        len(get_strategy(s).get_param_combinations()[:5] if quick else get_strategy(s).get_param_combinations())
-        for s in strategies
-        if s in STRATEGY_REGISTRY
-    )
-    print(f"  Strategies: {len(strategies)}, Total experiments: {total}")
+    known = [s for s in strategies if s in STRATEGY_REGISTRY]
+    for s in strategies:
+        if s not in STRATEGY_REGISTRY:
+            print(f"  WARNING: Unknown strategy '{s}' skipped. Use --list to see available names.")
+    counts = {s: get_strategy(s).count_param_combinations() for s in known}
+    total = sum(min(5, c) if quick else c for c in counts.values())
+    print(f"  Strategies: {len(known)} (of {len(strategies)} requested), Total experiments: {total}")
 
     all_results = []
     t0 = time.time()
@@ -286,22 +307,27 @@ def run_search(
             if sname not in STRATEGY_REGISTRY:
                 continue
             s = get_strategy(sname)
-            combos = s.get_param_combinations()
             if quick:
-                combos = combos[:5]
+                combos = _quick_sample(s, 5)
+                n_combos = len(combos)
+            else:
+                # Iterate lazily: the largest grids approach a million
+                # combinations and must not be materialized as a list.
+                combos = s.iter_param_combinations()
+                n_combos = s.count_param_combinations()
             cat = (
                 "ML"
                 if sname.startswith("ml_")
                 else ("combo" if sname in ["ensemble", "stacked", "regime_aware"] else "classic")
             )
-            print(f"\n  [{cat}] {sname} ({len(combos)} params) ...")
+            print(f"\n  [{cat}] {sname} ({n_combos} params) ...")
 
             if pool is not None:
                 job = pool.imap_unordered(_worker_run, ((sname, p) for p in combos), chunksize=16)
-                for result in tqdm(job, desc=f"  {sname}", total=len(combos), leave=True):
+                for result in tqdm(job, desc=f"  {sname}", total=n_combos, leave=True):
                     all_results.append(result)  # noqa: PERF402 - accumulates across strategies/checkpoints
             else:
-                for i, params in enumerate(tqdm(combos, desc=f"  {sname}", leave=True)):
+                for i, params in enumerate(tqdm(combos, desc=f"  {sname}", total=n_combos, leave=True)):
                     result = run_single_experiment(sname, params, data, df, periods, cost_bps, **backtest_kwargs)
                     compact = {k: v for k, v in result.items() if k != "positions"}
                     all_results.append(compact)
@@ -346,7 +372,9 @@ def run_search(
             backtest(
                 get_buy_and_hold(prices.loc[periods["test"][0] : periods["test"][1]]),
                 prices.loc[periods["test"][0] : periods["test"][1]],
-                cost_bps=0,
+                # Charge the benchmark the same one-shot entry cost so the
+                # comparison does not systematically flatter buy & hold.
+                cost_bps=cost_bps,
                 **backtest_kwargs,
             )["returns"],
             annualization=annualization,

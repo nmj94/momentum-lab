@@ -60,6 +60,64 @@ def test_download_data_sanitizes_cache_filename(tmp_path, monkeypatch):
     assert not (tmp_path / "escape_daily.csv").exists()
 
 
+def _fake_yf_download(index, base=1.0):
+    n = len(index)
+    return pd.DataFrame(
+        {
+            "Open": base + np.arange(n) * 0.01,
+            "High": base + np.arange(n) * 0.01,
+            "Low": base + np.arange(n) * 0.01,
+            "Close": base + np.arange(n) * 0.01,
+            "Volume": np.full(n, 100),
+        },
+        index=index,
+    )
+
+
+def test_download_data_ignores_corrupt_cache(tmp_path, monkeypatch):
+    """A corrupt cache file must be treated as a cache miss, not a hard error."""
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    monkeypatch.setattr(data_module, "DATA_DIR", data_dir)
+    (data_dir / "GLD_daily.csv").write_bytes(b"Date,Close\n\xff\xfe\x00garbage\n")
+    index = pd.date_range("2024-01-02", periods=5, freq="B")
+    monkeypatch.setattr(data_module.yf, "download", lambda *a, **k: _fake_yf_download(index))
+
+    with pytest.warns(RuntimeWarning, match="unreadable cache"):
+        df = data_module.download_data("GLD", start="2024-01-02", end="2024-01-08")
+
+    assert len(df) == 5
+    # The clean download must replace the corrupt cache.
+    assert len(pd.read_csv(data_dir / "GLD_daily.csv", index_col=0, parse_dates=True)) == 5
+
+
+def test_download_data_rejected_range_is_not_cached(tmp_path, monkeypatch):
+    """A download that fails the coverage check must not be persisted first."""
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    monkeypatch.setattr(data_module, "DATA_DIR", data_dir)
+    index = pd.date_range("2024-01-02", periods=3, freq="B")
+    monkeypatch.setattr(data_module.yf, "download", lambda *a, **k: _fake_yf_download(index))
+
+    with pytest.raises(ValueError, match="does not cover the requested range"):
+        data_module.download_data("GLD", start="2024-01-02", end="2024-02-01")
+
+    assert not (data_dir / "GLD_daily.csv").exists()
+
+
+def test_data_dir_env_override(tmp_path, monkeypatch):
+    """MOMENTUM_LAB_DATA_DIR must win over the package-relative default."""
+    import importlib
+
+    monkeypatch.setenv("MOMENTUM_LAB_DATA_DIR", str(tmp_path / "custom"))
+    try:
+        importlib.reload(data_module)
+        assert data_module.DATA_DIR == tmp_path / "custom"
+    finally:
+        monkeypatch.delenv("MOMENTUM_LAB_DATA_DIR", raising=False)
+        importlib.reload(data_module)
+
+
 def test_compute_features():
     """Test feature computation."""
     df = pd.DataFrame(
@@ -184,6 +242,78 @@ def test_run_search_rejects_parent_directory_run_id(tmp_path, monkeypatch):
         search_module.run_search(ticker="GLD", result_dir=tmp_path, run_id="..")
 
 
+def _monkeypatch_market_data(monkeypatch, n=600):
+    data = _mk_data(n)
+    df = pd.DataFrame({"close": data["close"]})
+    monkeypatch.setattr(search_module, "prepare_data", lambda *a, **k: (data, df))
+    return data, df
+
+
+def test_run_search_smoke_and_artifacts(tmp_path, monkeypatch):
+    """A quick search must rank results, save artifacts and pick a best strategy."""
+    _monkeypatch_market_data(monkeypatch)
+
+    result = search_module.run_search(
+        ticker="FAKE",
+        strategies=["tsmom", "dual_momentum"],
+        quick=True,
+        robust=False,
+        result_dir=tmp_path,
+        run_id="smoke",
+    )
+
+    assert result["run_id"] == "smoke"
+    assert result["best"] is not None
+    assert result["best"]["strategy"] in {"tsmom", "dual_momentum"}
+    assert (tmp_path / "smoke" / "run_config.json").exists()
+    assert (tmp_path / "smoke" / "all_results.csv").exists()
+    assert (tmp_path / "smoke" / "top_results.csv").exists()
+    evaluated = {r["strategy"] for r in result["all_results"]}
+    assert evaluated == {"tsmom", "dual_momentum"}
+
+
+def test_run_search_warns_about_unknown_strategies(tmp_path, monkeypatch, capsys):
+    """Unknown strategy names must be reported, not silently skipped."""
+    _monkeypatch_market_data(monkeypatch)
+
+    result = search_module.run_search(
+        ticker="FAKE",
+        strategies=["tsmom", "not_a_strategy"],
+        quick=True,
+        robust=False,
+        result_dir=tmp_path,
+        run_id="warn",
+    )
+
+    assert "WARNING: Unknown strategy 'not_a_strategy'" in capsys.readouterr().out
+    evaluated = {r["strategy"] for r in result["all_results"]}
+    assert evaluated == {"tsmom"}
+
+
+def test_quick_sample_spreads_across_the_grid():
+    """Quick mode must sample the grid evenly, not just the first combos."""
+    from momentum_lab.search import _quick_sample
+
+    s = get_strategy("tsmom")
+    all_combos = s.get_param_combinations()
+    assert len(all_combos) > 10
+
+    sampled = _quick_sample(s, 5)
+
+    assert len(sampled) == 5
+    positions = [all_combos.index(c) for c in sampled]
+    assert positions == sorted(set(positions))
+    assert positions[0] == 0
+    assert positions[-1] == len(all_combos) - 1
+    assert positions[1] > 4  # beyond the naive first-five slice
+
+
+@pytest.mark.parametrize("name", ["tsmom", "ma_cross", "zscore", "stacked", "regime_aware"])
+def test_count_param_combinations_matches_materialized_list(name):
+    s = get_strategy(name)
+    assert s.count_param_combinations() == len(s.get_param_combinations())
+
+
 def test_evaluate():
     """Test evaluation metrics."""
     returns = pd.Series(np.random.randn(252) * 0.01)
@@ -271,6 +401,56 @@ def test_stacked_stays_flat_until_filters_are_ready():
     assert positions.iloc[49:].eq(1.0).all()
 
 
+def test_stacked_keeps_shorts_during_downtrend():
+    """The trend-filter overlay must not close shorts while the trend is down.
+
+    The old single-rule filter zeroed positions whenever momentum <= 0,
+    which forced shorts flat exactly when short exposure was justified.
+    """
+    idx = pd.date_range("2020-01-01", periods=120, freq="B")
+    close = pd.Series(200.0 - 0.5 * np.arange(120), index=idx)
+
+    positions = get_strategy("stacked").generate_positions(
+        {"close": close},
+        momentum_lb=10,
+        ma_filter=50,
+        base_strategy="tsmom",
+        base_lookback=5,
+        long_short=True,
+        exit_on_neg=True,
+    )
+
+    assert positions.iloc[:49].eq(0.0).all()
+    assert positions.iloc[49:].eq(-1.0).all()
+
+
+def test_stacked_exit_filter_is_direction_aware():
+    """Longs exit on non-positive momentum / lost MA; shorts on the mirror image."""
+    rng = np.random.default_rng(7)
+    idx = pd.date_range("2020-01-01", periods=300, freq="B")
+    close = pd.Series(100 * np.exp(rng.normal(0.0002, 0.015, 300).cumsum()), index=idx)
+
+    momentum_lb, ma_filter = 10, 50
+    positions = get_strategy("stacked").generate_positions(
+        {"close": close},
+        momentum_lb=momentum_lb,
+        ma_filter=ma_filter,
+        base_strategy="tsmom",
+        base_lookback=5,
+        long_short=True,
+        exit_on_neg=True,
+    )
+
+    mom = close.pct_change(momentum_lb)
+    ma = close.rolling(ma_filter).mean()
+    ready = mom.notna() & ma.notna()
+
+    assert positions[~ready].eq(0.0).all()
+    assert not ((positions > 0) & ready & ((mom <= 0) | (close < ma))).any()
+    assert not ((positions < 0) & ready & ((mom >= 0) | (close > ma))).any()
+    assert (positions < 0).any()
+
+
 def test_dual_momentum_keeps_zero_return_flat():
     """Zero momentum must remain neutral when the threshold is zero."""
     close = pd.Series([100.0, 100.0, 99.0, 99.0])
@@ -305,6 +485,26 @@ def test_regime_aware():
     s = get_strategy("regime_aware")
     pos = s.run(data, adx_trend_threshold=15, mom_lookback=63, vol_target_normal=0.12, position_size=2.0)
     assert len(pos) == len(close)
+
+
+def test_regime_aware_run_scales_with_position_size():
+    """BaseStrategy.run must apply position_size; generate_positions has no such kwarg."""
+    data = _mk_data(320)
+    s = get_strategy("regime_aware")
+    kwargs = {"adx_trend_threshold": 15, "mom_lookback": 63, "vol_target_normal": 0.12}
+
+    raw = s.generate_positions(data, **kwargs)
+    scaled = s.run(data, position_size=2.0, **kwargs)
+
+    assert np.allclose(scaled, 2.0 * raw)
+
+
+def test_ensemble_rejects_unknown_member_strategy():
+    """Unparseable ensemble members must raise instead of shrinking the vote pool."""
+    close = _mk_data(60)["close"]
+
+    with pytest.raises(ValueError, match="Unknown ensemble member"):
+        get_strategy("ensemble").generate_positions({"close": close}, strategies=("nope_21",))
 
 
 def test_regime_aware_uses_crisis_target_for_bullish_regime(monkeypatch):
