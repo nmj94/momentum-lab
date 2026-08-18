@@ -88,6 +88,7 @@ def robustness_check(
             "neighbors": neighbors,
             "n_neighbors": len(neighbors),
             "grade": "N/A",
+            "verdict": "Skipped",
         }
 
     vals = [_val_sharpe(strategy, data, prices, periods, nb, cost_bps, backtest_kwargs) for nb in neighbors]
@@ -101,6 +102,7 @@ def robustness_check(
             "neighbors": [],
             "n_neighbors": 0,
             "grade": "N/A",
+            "verdict": "Skipped",
         }
 
     stats = {

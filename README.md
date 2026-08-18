@@ -5,7 +5,7 @@
 
 [English](README.md) | [中文](README_CN.md)
 
-Momentum Lab automatically tests 26 strategies across hundreds of thousands of parameter combinations to find the best-performing strategy for your chosen asset. It includes classic momentum indicators, machine learning models, and an adaptive regime-aware strategy that switches between sub-strategies based on market conditions.
+Momentum Lab automatically tests 26 strategies across more than a million parameter combinations to find the best-performing strategy for your chosen asset. It includes classic momentum indicators, machine learning models, and an adaptive regime-aware strategy that switches between sub-strategies based on market conditions.
 
 ## Quick Start
 
@@ -120,10 +120,13 @@ print(f"Best strategy: {results['best']['strategy']}")
 print(f"Best params: {results['best']['params']}")
 
 # Robustness check result (overfitting detection)
-rob = results.get("robustness")
-print(f"Grade: {rob['grade']} ({rob['verdict']})")
-print(f"Baseline val Sharpe: {rob['baseline']:.4f}")
-print(f"Neighbor median: {rob['stats']['median']:.4f}")
+rob = results.get("robustness") or {}
+if rob.get("grade"):
+    print(f"Grade: {rob['grade']} ({rob.get('verdict', 'n/a')})")
+    print(f"Baseline val Sharpe: {rob['baseline']:.4f}")
+    stats = rob.get("stats") or {}
+    if stats:
+        print(f"Neighbor median: {stats['median']:.4f}")
 
 # Or test a single strategy
 from momentum_lab.data import prepare_data
@@ -187,6 +190,10 @@ cd momentum-lab
 pip install -e .
 ```
 
+> **macOS note:** the optional XGBoost-based strategies require `libomp`
+> (`brew install libomp`). Without it, `ml_xgb` experiments fail gracefully
+> and all other strategies work normally.
+
 ### Requirements
 - Python 3.10+
 - A Yahoo Finance-accessible ticker (stocks, ETFs, crypto, indices)
@@ -202,14 +209,22 @@ After running, results are saved to `experiments/<run_id>/`; each run is isolate
 
 ## Example Results (GLD)
 
-Tested 974,000+ parameter combinations across 23 strategies:
+Produced by a full exhaustive search over all 18 non-ML strategies (952,824
+experiments, data 2004-11-18 ~ 2026-08-14). The buy & hold benchmark is
+charged the same one-shot entry cost as the strategies:
 
 | Strategy | Val Sharpe | Test Sharpe | Test CAGR | Test MaxDD |
 |----------|-----------|------------|-----------|------------|
-| Regime Aware | 0.90 | 1.31 | 36.3% | -19.0% |
-| Vol Scale Mom | 0.89 | 1.49 | 54.1% | -20.3% |
-| TSMOM | 0.06 | 1.55 | 48.8% | -23.9% |
-| Buy & Hold | 0.56 | 1.18 | 24.2% | -21.0% |
+| TSMOM (best by val) | 1.29 | 0.27 | 7.9% | -38.3% |
+| Acceleration | 1.28 | -0.07 | 0.8% | -32.1% |
+| RSI | 1.23 | 0.48 | 13.8% | -35.8% |
+| Buy & Hold | - | 0.86 | 20.4% | -26.4% |
+
+The best-by-validation pick (TSMOM) earned robustness grade B (stable
+neighborhood, no isolated peak) but underperformed buy & hold on the test
+window - a strong gold bull market in which a long-only filtered strategy
+lags. Val-to-test degradation of this size is normal and is exactly why the
+tool reports the untouched test set separately.
 
 ## Disclaimer
 

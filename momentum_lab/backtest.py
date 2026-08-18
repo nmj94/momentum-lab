@@ -43,8 +43,8 @@ def backtest(
     """
     if annualization <= 0:
         raise ValueError("annualization must be positive")
-    if any(v < 0 for v in (cost_bps, borrow_bps, slippage_bps)):
-        raise ValueError("cost and slippage parameters cannot be negative")
+    if any(v < 0 for v in (cost_bps, borrow_bps, slippage_bps, financing_rate)):
+        raise ValueError("cost, financing and slippage parameters cannot be negative")
 
     if prices.empty:
         empty = prices.astype(float).copy()

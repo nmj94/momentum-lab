@@ -73,7 +73,7 @@ def _params_to_str(params):
     return ", ".join(parts)
 
 
-def _save_results_csv(results, path):
+def _results_rows(results):
     rows = []
     for r in results:
         row = {
@@ -85,7 +85,26 @@ def _save_results_csv(results, path):
             for k, v in m.items():
                 row[f"{period}_{k}"] = v
         rows.append(row)
-    pd.DataFrame(rows).to_csv(path, index=False, encoding="utf-8-sig")
+    return rows
+
+
+def _append_results_csv(results, path, write_header):
+    """Incrementally flush checkpoint rows instead of rewriting the whole file.
+
+    Full-search checkpoints approach 400 MB; rewriting the cumulative CSV
+    after every strategy wastes multi-GB of I/O.
+    """
+    rows = _results_rows(results)
+    if not rows:
+        return
+    pd.DataFrame(rows).to_csv(
+        path,
+        mode="a",
+        header=write_header,
+        index=False,
+        # BOM only belongs at the very start of the file.
+        encoding="utf-8-sig" if write_header else "utf-8",
+    )
 
 
 def _normalize_results(results):
@@ -237,6 +256,20 @@ def run_search(
         dict with 'all_results', 'top_results', 'best', 'robustness',
         'run_id', and 'result_dir'.
     """
+    # Validate up front: an invalid cost/annualization would otherwise be
+    # swallowed by run_single_experiment's per-combo error handling and
+    # silently turn the whole run into sentinel (-99) results.
+    if cost_bps < 0 or slippage_bps < 0 or borrow_bps < 0 or financing_rate < 0:
+        raise ValueError("cost, financing and slippage parameters cannot be negative")
+    if annualization <= 0:
+        raise ValueError("annualization must be positive")
+    if top_n < 1:
+        raise ValueError("top_n must be at least 1")
+    if workers < 1:
+        raise ValueError("workers must be at least 1")
+    if not 0 < robust_frac <= 1:
+        raise ValueError("robust_frac must be in (0, 1]")
+
     base_result_dir = Path(result_dir) if result_dir is not None else RESULT_DIR
     safe_ticker = str(ticker).replace("/", "_").replace("^", "_")
     run_id = run_id or f"{safe_ticker}_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{uuid4().hex[:8]}"
@@ -294,7 +327,7 @@ def run_search(
     all_results = []
     t0 = time.time()
 
-    use_workers = workers > 1 and len(strategies) > 0
+    use_workers = workers > 1 and len(known) > 0
     pool = None
     if use_workers:
         import multiprocessing as mp
@@ -306,6 +339,7 @@ def run_search(
             initargs=(data, df, periods, cost_bps, backtest_kwargs),
         )
 
+    all_csv = run_dir / "all_results.csv"
     try:
         for sname in strategies:
             if sname not in STRATEGY_REGISTRY:
@@ -326,17 +360,18 @@ def run_search(
             )
             print(f"\n  [{cat}] {sname} ({n_combos} params) ...")
 
+            batch = []
             if pool is not None:
                 job = pool.imap_unordered(_worker_run, ((sname, p) for p in combos), chunksize=16)
                 for result in tqdm(job, desc=f"  {sname}", total=n_combos, leave=True):
-                    all_results.append(result)  # noqa: PERF402 - accumulates across strategies/checkpoints
+                    batch.append(result)  # noqa: PERF402 - accumulates across the strategy
             else:
-                for i, params in enumerate(tqdm(combos, desc=f"  {sname}", total=n_combos, leave=True)):
+                for params in tqdm(combos, desc=f"  {sname}", total=n_combos, leave=True):
                     result = run_single_experiment(sname, params, data, df, periods, cost_bps, **backtest_kwargs)
-                    compact = {k: v for k, v in result.items() if k != "positions"}
-                    all_results.append(compact)
+                    batch.append({k: v for k, v in result.items() if k != "positions"})
 
-            _save_results_csv(all_results, run_dir / "all_results.csv")
+            all_results.extend(batch)
+            _append_results_csv(batch, all_csv, write_header=not all_csv.exists())
             print(f"  [checkpoint] {sname} done, {len(all_results)} total")
     finally:
         if pool is not None:
@@ -348,7 +383,14 @@ def run_search(
 
     if not all_results:
         print("  WARNING: No experiments completed. Check strategy names and data.")
-        return {"all_results": [], "top_results": [], "best": None, "run_id": run_id, "result_dir": str(run_dir)}
+        return {
+            "all_results": [],
+            "top_results": [],
+            "best": None,
+            "robustness": None,
+            "run_id": run_id,
+            "result_dir": str(run_dir),
+        }
 
     # Phase 2: Rank by val Sharpe
     all_results = _normalize_results(all_results)
@@ -448,8 +490,7 @@ def run_search(
             ).to_csv(run_dir / "robustness.csv", index=False, encoding="utf-8-sig")
             print(f"    Saved to {run_dir / 'robustness.csv'}")
 
-    # Save summary
-    _save_results_csv(all_results, run_dir / "all_results.csv")
+    # Save summary (all_results.csv was already flushed incrementally)
     if top:
         rows = []
         for r in top:

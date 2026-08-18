@@ -294,20 +294,26 @@ class Donchian(BaseStrategy):
         ep = exit_period if exit_period > 0 else period
         exit_upper = high.rolling(ep).max().shift(1)
         exit_lower = low.rolling(ep).min().shift(1)
-        pos = pd.Series(0.0, index=close.index)
+        # Iterate over plain numpy buffers: pandas .iloc indexing in this
+        # state machine dominates profile time for the 16k-combo grid.
+        c = close.to_numpy(dtype=float)
+        eu = exit_upper.to_numpy(dtype=float)
+        el = exit_lower.to_numpy(dtype=float)
+        bu_a = bu.to_numpy(dtype=bool)
+        bd_a = bd.to_numpy(dtype=bool)
+        pos = np.zeros(len(c))
         state = 0.0
-        for i in range(len(close)):
-            if (state > 0 and close.iloc[i] < exit_lower.iloc[i]) or (
-                state < 0 and close.iloc[i] > exit_upper.iloc[i]
-            ):
+        for i in range(len(c)):
+            ci = c[i]
+            if (state > 0 and ci < el[i]) or (state < 0 and ci > eu[i]):
                 state = 0.0
             if state == 0.0:
-                if pd.notna(bu.iloc[i]) and bool(bu.iloc[i]):
+                if bu_a[i]:
                     state = 1.0
-                elif long_short and pd.notna(bd.iloc[i]) and bool(bd.iloc[i]):
+                elif long_short and bd_a[i]:
                     state = -1.0
-            pos.iloc[i] = state
-        return pos
+            pos[i] = state
+        return pd.Series(pos, index=close.index)
 
 
 class DualMomentum(BaseStrategy):
@@ -421,12 +427,15 @@ class ZScore(BaseStrategy):
     def generate_positions(self, data, lookback=21, entry_z=1.0, exit_z=0.0, mode="momentum", long_short=True):
         close = data["close"]
         z = (close - close.rolling(lookback).mean()) / (close.rolling(lookback).std() + 1e-10)
-        pos = pd.Series(0.0, index=close.index)
-        state = 0.0
         is_reversion = mode != "momentum"
-        for i, value in enumerate(z.to_numpy()):
+        # Plain numpy state machine: the pandas .iloc loop dominated profile
+        # time for the 48k-combo grid.
+        values = z.to_numpy(dtype=float)
+        pos = np.zeros(len(values))
+        state = 0.0
+        for i, value in enumerate(values):
             if not np.isfinite(value):
-                pos.iloc[i] = state
+                pos[i] = state
                 continue
             long_entry = value < -entry_z if is_reversion else value > entry_z
             short_entry = value > entry_z if is_reversion else value < -entry_z
@@ -441,8 +450,8 @@ class ZScore(BaseStrategy):
                 state = -1.0 if long_short else 0.0
             elif state < 0 and long_entry:
                 state = 1.0
-            pos.iloc[i] = state
-        return pos
+            pos[i] = state
+        return pd.Series(pos, index=close.index)
 
 
 class HeikinAshi(BaseStrategy):
@@ -635,6 +644,19 @@ class _MLBase(BaseStrategy):
         return pos
 
 
+_SKLEARN_PENALTY_DEPRECATED = None
+
+
+def _sklearn_penalty_deprecated():
+    """Probe (once) whether this scikit-learn version deprecates ``penalty``."""
+    global _SKLEARN_PENALTY_DEPRECATED
+    if _SKLEARN_PENALTY_DEPRECATED is None:
+        from sklearn.linear_model import LogisticRegression
+
+        _SKLEARN_PENALTY_DEPRECATED = LogisticRegression().get_params()["penalty"] == "deprecated"
+    return _SKLEARN_PENALTY_DEPRECATED
+
+
 class MLLogReg(_MLBase):
     name = "ml_logreg"
     param_grid: ClassVar[dict] = {
@@ -661,7 +683,7 @@ class MLLogReg(_MLBase):
             "max_iter": 2000,
             "random_state": 42,
         }
-        if LogisticRegression().get_params()["penalty"] != "deprecated":
+        if not _sklearn_penalty_deprecated():
             model_kwargs["penalty"] = "elasticnet"
         fn = lambda: LogisticRegression(**model_kwargs)
         return self._preds_to_positions(

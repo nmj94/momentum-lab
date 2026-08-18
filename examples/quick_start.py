@@ -5,10 +5,14 @@ from momentum_lab import run_search
 # Just provide a ticker - that's it!
 results = run_search("GLD", quick=True)
 
-print(f"\nBest strategy: {results['best']['strategy']}")
-print(f"Best params: {results['best']['params']}")
+best = results.get("best")
+if best is None:
+    print("\nNo strategy produced valid results.")
+else:
+    print(f"\nBest strategy: {best['strategy']}")
+    print(f"Best params: {best['params']}")
 
 # Robustness check result (overfitting detection)
 rob = results.get("robustness") or {}
-if rob and rob.get("grade"):
-    print(f"Robustness grade: {rob['grade']} ({rob['verdict']})")
+if rob.get("grade"):
+    print(f"Robustness grade: {rob['grade']} ({rob.get('verdict', 'n/a')})")

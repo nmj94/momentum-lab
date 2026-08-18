@@ -286,6 +286,92 @@ def _monkeypatch_market_data(monkeypatch, n=600):
     return data, df
 
 
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"cost_bps": -1}, "cannot be negative"),
+        ({"slippage_bps": -0.5}, "cannot be negative"),
+        ({"borrow_bps": -10}, "cannot be negative"),
+        ({"financing_rate": -0.01}, "cannot be negative"),
+        ({"annualization": 0}, "annualization must be positive"),
+        ({"top_n": 0}, "top_n must be at least 1"),
+        ({"workers": 0}, "workers must be at least 1"),
+        ({"robust_frac": 0}, "robust_frac must be in"),
+        ({"robust_frac": 1.5}, "robust_frac must be in"),
+    ],
+)
+def test_run_search_rejects_invalid_arguments(tmp_path, monkeypatch, kwargs, match):
+    """Invalid run parameters must fail up front, not produce silent -99 runs."""
+    monkeypatch.setattr(
+        search_module,
+        "prepare_data",
+        lambda *args, **kw: pytest.fail("invalid arguments must be rejected before data access"),
+    )
+
+    with pytest.raises(ValueError, match=match):
+        search_module.run_search(ticker="GLD", result_dir=tmp_path, run_id="invalid", **kwargs)
+
+
+def test_robustness_skip_path_includes_verdict():
+    """Robustness error reports must expose a 'verdict' key for callers."""
+    from momentum_lab.robustness import robustness_check
+
+    close = pd.Series(np.random.randn(300).cumsum() + 100)
+    data = {"close": close, "high": close + 1, "low": close - 1}
+    df = pd.DataFrame({"close": close})
+    periods = {
+        "train": (df.index[0], df.index[170]),
+        "val": (df.index[170], df.index[240]),
+        "test": (df.index[240], df.index[-1]),
+    }
+
+    report = robustness_check(
+        data,
+        df,
+        periods,
+        "tsmom",
+        {"threshold": 0.0, "long_short": True, "ma_type": "sma"},  # only one perturbable numeric param
+        cost_bps=1.0,
+        min_neighbors=4,
+    )
+
+    assert report["error"]
+    assert report["grade"] == "N/A"
+    assert report["verdict"] == "Skipped"
+
+
+def test_vol_ratio_features_survive_zero_volume():
+    """Zero-volume stretches must not produce NaN volume-ratio features."""
+    n = 60
+    df = pd.DataFrame(
+        {
+            "close": 100.0 + np.arange(n) * 0.1,
+            "volume": np.where((np.arange(n) >= 20) & (np.arange(n) < 30), 0.0, 1000.0),
+        }
+    )
+
+    feats = compute_features(df)
+
+    # NaN only during the inherent rolling(5) warm-up, never from 0/0 volume.
+    assert feats["vol_ratio_5"].iloc[4:].notna().all()
+    assert (feats["vol_ratio_5"].iloc[20:30] == 0.0).all()
+
+
+def test_donchian_holds_until_exit_channel_break():
+    """Donchian entries must persist until the (tighter) exit channel breaks."""
+    close = pd.Series(
+        [100.0] * 20 + [101.0] * 5 + [110.0] + [111.0] * 4 + [90.0],
+    )
+
+    positions = get_strategy("donchian").generate_positions(
+        {"close": close}, period=10, long_short=False, exit_period=5, confirmation=1
+    )
+
+    assert positions.iloc[25] == 1.0  # breakout above the 10-bar high
+    assert positions.iloc[26:30].eq(1.0).all()  # persists while inside the channel
+    assert positions.iloc[30] == 0.0  # crash below the 5-bar exit channel
+
+
 def test_run_search_smoke_and_artifacts(tmp_path, monkeypatch):
     """A quick search must rank results, save artifacts and pick a best strategy."""
     _monkeypatch_market_data(monkeypatch)

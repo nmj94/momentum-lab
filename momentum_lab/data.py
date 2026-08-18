@@ -182,8 +182,8 @@ def compute_features(df):
         feats[f"ma_dist_{lb}"] = (close - ma) / ma
 
     # RSI
+    delta = close.diff()
     for period in [7, 14, 21, 28]:
-        delta = close.diff()
         gain = delta.clip(lower=0).rolling(period).mean()
         loss = (-delta.clip(upper=0)).rolling(period).mean()
         rs = gain / (loss + 1e-10)
@@ -215,9 +215,10 @@ def compute_features(df):
     for lb in [5, 10, 21, 42, 63, 126, 252]:
         feats[f"roc_{lb}"] = (close / close.shift(lb) - 1) * 100
 
-    # Volume ratio
+    # Volume ratio (epsilon: zero-volume stretches must not produce NaN
+    # features that silently drop rows from ML training windows)
     for lb in [5, 10, 21]:
-        feats[f"vol_ratio_{lb}"] = volume / volume.rolling(lb).mean()
+        feats[f"vol_ratio_{lb}"] = volume / (volume.rolling(lb).mean() + 1e-10)
 
     # Acceleration
     feats["acceleration"] = close.pct_change(5) - close.pct_change(10)

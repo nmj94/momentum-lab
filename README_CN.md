@@ -4,7 +4,7 @@
 
 [English](README.md) | [中文](README_CN.md)
 
-Momentum Lab 自动测试 26 种策略、超过 160 万组参数组合，为你的标的找到表现最优的动量策略。包含经典动量指标、机器学习模型、以及根据市场状态自动切换子策略的自适应 Regime 策略。
+Momentum Lab 自动测试 26 种策略、超过 135 万组参数组合，为你的标的找到表现最优的动量策略。包含经典动量指标、机器学习模型、以及根据市场状态自动切换子策略的自适应 Regime 策略。
 
 ## 快速开始
 
@@ -119,10 +119,13 @@ print(f"最优策略: {results['best']['strategy']}")
 print(f"最优参数: {results['best']['params']}")
 
 # 稳健性检验结果（过拟合检测）
-rob = results.get("robustness")
-print(f"等级: {rob['grade']} ({rob['verdict']})")
-print(f"基线验证 Sharpe: {rob['baseline']:.4f}")
-print(f"邻域中位数: {rob['stats']['median']:.4f}")
+rob = results.get("robustness") or {}
+if rob.get("grade"):
+    print(f"等级: {rob['grade']} ({rob.get('verdict', 'n/a')})")
+    print(f"基线验证 Sharpe: {rob['baseline']:.4f}")
+    stats = rob.get("stats") or {}
+    if stats:
+        print(f"邻域中位数: {stats['median']:.4f}")
 
 # 单独测试某个策略
 from momentum_lab.data import prepare_data
@@ -185,6 +188,9 @@ cd momentum-lab
 pip install -e .
 ```
 
+> **macOS 提示：** 可选的 XGBoost 策略需要 `libomp`（`brew install libomp`）。
+> 缺少它时 `ml_xgb` 实验会优雅失败，其余策略不受影响。
+
 ### 环境要求
 - Python 3.10+
 - 可访问 Yahoo Finance 的网络（支持股票、ETF、加密货币、指数）
@@ -200,14 +206,19 @@ pip install -e .
 
 ## 示例结果（黄金 GLD）
 
-测试了 97 万+ 组参数组合，覆盖 23 种策略：
+由全部 18 个非 ML 策略的穷举搜索产生（952,824 个实验，数据区间
+2004-11-18 ~ 2026-08-14）。买入持有基准与策略收取相同的一次性建仓成本：
 
 | 策略 | 验证集 Sharpe | 测试集 Sharpe | 测试集年化 | 测试集最大回撤 |
 |------|-------------|-------------|-----------|-------------|
-| Regime Aware | 0.90 | 1.31 | 36.3% | -19.0% |
-| Vol Scale Mom | 0.89 | 1.49 | 54.1% | -20.3% |
-| TSMOM | 0.06 | 1.55 | 48.8% | -23.9% |
-| 买入持有 | 0.56 | 1.18 | 24.2% | -21.0% |
+| TSMOM（验证集最优） | 1.29 | 0.27 | 7.9% | -38.3% |
+| Acceleration | 1.28 | -0.07 | 0.8% | -32.1% |
+| RSI | 1.23 | 0.48 | 13.8% | -35.8% |
+| 买入持有 | - | 0.86 | 20.4% | -26.4% |
+
+验证集最优（TSMOM）的稳健性等级为 B（邻域稳定、非孤峰），但在测试窗口
+跑输买入持有——该窗口金价单边大牛市，只做多过滤策略反而落后。这种量级的
+验证->测试衰减属正常现象，也正是本工具单独报告未触碰测试集的原因。
 
 ## 免责声明
 
