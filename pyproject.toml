@@ -27,7 +27,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "ruff"]
+dev = ["pytest", "ruff", "hypothesis"]
 
 [project.urls]
 Homepage = "https://github.com/nmj94/momentum-lab"
@@ -52,6 +52,12 @@ build-backend = "hatchling.build"
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
+    "hypothesis>=6.100",
+]
+
+[tool.pytest.ini_options]
+markers = [
+    "network: tests that require internet access or a pre-populated data cache",
 ]
 
 [tool.hatch.build.targets.wheel]

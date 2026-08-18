@@ -12,6 +12,7 @@ from momentum_lab.search import _split_periods
 from momentum_lab.strategies import STRATEGY_REGISTRY, get_strategy
 
 
+@pytest.mark.network
 def test_download_data():
     """Test data download (falls back to cache if the API is rate-limited)."""
     try:
@@ -23,6 +24,7 @@ def test_download_data():
     assert df["close"].iloc[0] > 0
 
 
+@pytest.mark.network
 def test_download_data_range_respected():
     """Cached data must be sliced to the requested [start, end] window."""
     df = download_data("GLD", start="2023-01-01", end="2023-03-01", use_cache=True)

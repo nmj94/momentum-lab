@@ -146,8 +146,12 @@ def _quick_sample(strategy, k=5):
     representative of the search space.
     """
     total = strategy.count_param_combinations()
+    if k <= 0:
+        return []
     if total <= k:
         return list(strategy.iter_param_combinations())
+    if k == 1:
+        return [next(iter(strategy.iter_param_combinations()))]
     wanted = sorted({round(i * (total - 1) / (k - 1)) for i in range(k)})
     picked = []
     for i, combo in enumerate(strategy.iter_param_combinations()):
