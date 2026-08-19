@@ -1,6 +1,7 @@
 """data.py - Download market data for any ticker."""
 
 import os
+import re
 import warnings
 from pathlib import Path
 
@@ -12,6 +13,12 @@ import yfinance as yf
 # override: in a wheel install ``Path(__file__).parent.parent`` points at the
 # interpreter's site-packages parent, and we must not write market data there.
 DATA_DIR = Path(os.environ.get("MOMENTUM_LAB_DATA_DIR", str(Path(__file__).parent.parent / "data")))
+
+# Yahoo tickers are alphanumeric plus a small symbol set (BRK-B, RDS.A,
+# ^GSPC, EURUSD=X).  Anything else (notably URL-significant characters such
+# as ``?``, ``&``, ``#`` or ``/``) is rejected before it reaches the request
+# URL built by yfinance.
+_TICKER_RE = re.compile(r"^[A-Za-z0-9._^=-]+$")
 
 
 def _load_cache(cache_path):
@@ -81,15 +88,20 @@ def download_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True):
         pd.DataFrame with columns: open, high, low, close, volume.
 
     Raises:
-        ValueError: If the download fails and no cached copy exists.
+        ValueError: If the ticker is invalid, the download fails and no
+            cached copy exists, or the download contains no usable rows.
     """
     start_ts = pd.Timestamp(start)
     end_ts = pd.Timestamp(end) if end is not None else None
     if end_ts is not None and end_ts < start_ts:
         raise ValueError("end must be on or after start")
 
+    ticker = str(ticker)
+    if not _TICKER_RE.match(ticker):
+        raise ValueError(f"Invalid ticker {ticker!r}: only letters, digits and '.', '_', '^', '=', '-' are allowed.")
+
     DATA_DIR.mkdir(exist_ok=True)
-    safe_ticker = "".join(char if char.isalnum() or char in "._-" else "_" for char in str(ticker))
+    safe_ticker = "".join(char if char.isalnum() or char in "._-" else "_" for char in ticker)
     cache_path = DATA_DIR / f"{safe_ticker}_daily.csv"
 
     cached = _load_cache(cache_path) if use_cache and cache_path.exists() else None
@@ -124,7 +136,14 @@ def download_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True):
     keep = [c for c in ["open", "high", "low", "close", "volume"] if c in df.columns]
     df = df[keep].copy()
     df.index = pd.to_datetime(df.index)
-    df = df.dropna()
+    # Only price columns are mandatory: volume is NaN for some indices and
+    # must not punch holes in the price series.  A frame left empty after
+    # dropping price NaNs is a hard failure, never a silent empty result
+    # (previously it slid past the coverage checks and poisoned the cache).
+    price_cols = [c for c in ["open", "high", "low", "close"] if c in df.columns]
+    df = df.dropna(subset=price_cols)
+    if df.empty or "close" not in df.columns:
+        raise ValueError(f"Download for '{ticker}' returned no usable data.")
 
     if use_cache and cached is not None:
         # Keep previously downloaded history instead of overwriting it
@@ -156,11 +175,13 @@ def download_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True):
     return _slice_range(df, start, end)
 
 
-def compute_features(df):
+def compute_features(df, annualization=252.0):
     """Compute technical indicator features for ML strategies.
 
     Args:
         df: DataFrame with at least a 'close' column.
+        annualization: Return periods per year, used to annualize the
+            volatility features (252 for trading days, 365 for crypto).
 
     Returns:
         pd.DataFrame of features (same index as input).
@@ -200,7 +221,7 @@ def compute_features(df):
 
     # Volatility
     for lb in [10, 21, 42, 63]:
-        feats[f"vol_{lb}"] = close.pct_change().rolling(lb).std() * np.sqrt(252)
+        feats[f"vol_{lb}"] = close.pct_change().rolling(lb).std() * np.sqrt(annualization)
 
     # Bollinger band position
     for lb in [10, 20, 50]:
@@ -230,7 +251,7 @@ def compute_features(df):
     return feats
 
 
-def prepare_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True):
+def prepare_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True, annualization=252.0):
     """Download data + compute features, return unified data dict.
 
     Args:
@@ -238,13 +259,16 @@ def prepare_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True):
         start: Start date.
         end: End date.
         use_cache: If True, reuse the local CSV cache (default True).
+        annualization: Return periods per year. Strategies read it from the
+            data dict so volatility targeting matches the evaluation horizon
+            (252 for trading days, 365 for continuously traded assets).
 
     Returns:
         (data_dict, df) where data_dict has keys for strategy consumption
         and df is the raw OHLCV DataFrame.
     """
     df = download_data(ticker, start=start, end=end, use_cache=use_cache)
-    feats = compute_features(df)
+    feats = compute_features(df, annualization=annualization)
 
     data = {
         "close": df["close"],
@@ -254,5 +278,6 @@ def prepare_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True):
         "volume": df.get("volume", pd.Series(1, index=df.index)),
         "features": feats,
         "ticker": ticker,
+        "annualization": annualization,
     }
     return data, df

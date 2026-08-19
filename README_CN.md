@@ -155,10 +155,15 @@ momentum-lab TICKER [选项]
   --financing-rate R  年化融资利率（小数，默认 0）
   --borrow-bps BPS    年化做空借券费，基点（默认 0）
   --annualization N   年化周期数（股票 252，加密货币 365）
+  --risk-free-rate R  年化无风险利率，小数形式（默认 0.04）
   --start DATE        数据开始日期（默认 2004-01-01）
   --end DATE          数据结束日期（默认今天）
   --refresh           忽略缓存，强制从 Yahoo 重新下载
   --top N             保留前 N 个结果（默认 50）
+  --result-dir DIR    结果产物父目录（默认 ./experiments）
+  --run-id ID         自定义运行目录名（默认自动生成）
+  --no-keep-all       结果只流式写入 CSV，不在内存中保留全量
+                      （全量网格建议开启：否则内存占用 1 GB+）
   --robust            对最优参数做稳健性检验（默认开启）
   --no-robust         跳过稳健性检验
   --robust-frac F     参数扰动比例（默认 0.2）

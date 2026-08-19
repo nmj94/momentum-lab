@@ -156,10 +156,15 @@ Options:
   --financing-rate R  Annual financing rate as a decimal (default: 0)
   --borrow-bps BPS    Annual short borrow fee in basis points (default: 0)
   --annualization N   Periods per year (252 stocks, 365 crypto)
+  --risk-free-rate R  Annual risk-free rate as a decimal (default: 0.04)
   --start DATE        Data start date (default: 2004-01-01)
   --end DATE          Data end date (default: today)
   --refresh           Ignore cached data and re-download from Yahoo
   --top N             Number of top results (default: 50)
+  --result-dir DIR    Parent directory for run artifacts (default: ./experiments)
+  --run-id ID         Custom run directory name (default: auto-generated)
+  --no-keep-all       Stream results to CSV without retaining them in memory
+                      (recommended for full grids: ~1 GB+ RAM otherwise)
   --robust            Run robustness check on best params (default: True)
   --no-robust         Skip the robustness check
   --robust-frac F     Perturbation fraction (default: 0.2)

@@ -34,10 +34,23 @@ def main():
     parser.add_argument(
         "--annualization", type=float, default=252, help="Return periods per year (252 stocks, 365 crypto)"
     )
+    parser.add_argument(
+        "--risk-free-rate", type=float, default=0.04, help="Annual risk-free rate as a decimal (default: 0.04)"
+    )
     parser.add_argument("--start", type=str, default="2004-01-01", help="Data start date")
     parser.add_argument("--end", type=str, default=None, help="Data end date (default: today)")
     parser.add_argument("--refresh", action="store_true", help="Ignore cached data and re-download from Yahoo")
     parser.add_argument("--top", type=int, default=50, help="Number of top results to keep")
+    parser.add_argument(
+        "--result-dir", type=str, default=None, help="Parent directory for run artifacts (default: ./experiments)"
+    )
+    parser.add_argument("--run-id", type=str, default=None, help="Custom run directory name (default: auto-generated)")
+    parser.add_argument(
+        "--no-keep-all",
+        dest="keep_all_results",
+        action="store_false",
+        help="Stream results to CSV without retaining them in memory (lower RAM on full grids)",
+    )
     parser.add_argument(
         "--robust",
         dest="robust",
@@ -73,6 +86,7 @@ def main():
         financing_rate=args.financing_rate,
         borrow_bps=args.borrow_bps,
         annualization=args.annualization,
+        risk_free_rate=args.risk_free_rate,
         workers=args.workers,
         quick=args.quick,
         top_n=args.top,
@@ -81,6 +95,9 @@ def main():
         robust=args.robust,
         robust_frac=args.robust_frac,
         use_cache=not args.refresh,
+        result_dir=args.result_dir,
+        run_id=args.run_id,
+        keep_all_results=args.keep_all_results,
     )
 
 

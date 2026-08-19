@@ -1,15 +1,17 @@
 """search.py - Exhaustive parameter search engine."""
 
+import heapq
 import json
 import time
 from datetime import datetime, timezone
+from itertools import count
 from pathlib import Path
 from uuid import uuid4
 
 import numpy as np
 import pandas as pd
 
-from .backtest import backtest, evaluate, get_buy_and_hold
+from .backtest import RISK_FREE_RATE, backtest, evaluate, get_buy_and_hold
 from .data import prepare_data
 from .robustness import robustness_check
 from .strategies import STRATEGY_REGISTRY, get_strategy
@@ -28,17 +30,16 @@ RESULT_DIR = Path("experiments")
 _POOL_STATE = None
 
 
-def _init_worker(data, df, periods, cost_bps, backtest_kwargs):
+def _init_worker(data, df, periods, cost_bps, risk_free_rate, backtest_kwargs):
     global _POOL_STATE
-    _POOL_STATE = (data, df, periods, cost_bps, backtest_kwargs)
+    _POOL_STATE = (data, df, periods, cost_bps, risk_free_rate, backtest_kwargs)
 
 
 def _worker_run(args):
     """Module-level worker that runs a single experiment (required on Windows)."""
     strategy_name, params = args
-    data, df, periods, cost_bps, backtest_kwargs = _POOL_STATE
-    result = run_single_experiment(strategy_name, params, data, df, periods, cost_bps, **backtest_kwargs)
-    return {k: v for k, v in result.items() if k != "positions"}
+    data, df, periods, cost_bps, risk_free_rate, backtest_kwargs = _POOL_STATE
+    return run_single_experiment(strategy_name, params, data, df, periods, cost_bps, risk_free_rate, **backtest_kwargs)
 
 
 def _jsonable(v):
@@ -107,41 +108,6 @@ def _append_results_csv(results, path, write_header):
     )
 
 
-def _normalize_results(results):
-    normalized = []
-    for r in results:
-        if "val_metrics" not in r and "val_sharpe" in r:
-            r = dict(r)
-            for period in ["train", "val", "test"]:
-                r[f"{period}_metrics"] = {}
-                for k in [
-                    "sharpe",
-                    "sortino",
-                    "calmar",
-                    "max_drawdown",
-                    "cagr",
-                    "total_return",
-                    "volatility",
-                    "win_rate",
-                    "profit_factor",
-                    "skew",
-                    "kurtosis",
-                ]:
-                    col = f"{period}_{k}"
-                    if col in r:
-                        try:
-                            r[f"{period}_metrics"][k] = float(r[col])
-                        except (ValueError, TypeError):
-                            r[f"{period}_metrics"][k] = -99
-            if "params" in r and isinstance(r["params"], str):
-                try:
-                    r["params"] = json.loads(r["params"])
-                except Exception:
-                    r["params"] = {}
-        normalized.append(r)
-    return normalized
-
-
 def _split_periods(index):
     """Split an ordered index into non-overlapping train, validation, and test ranges."""
     n = len(index)
@@ -181,7 +147,9 @@ def _quick_sample(strategy, k=5):
     return picked
 
 
-def run_single_experiment(strategy_name, params, data, df, periods, cost_bps=1.0, **backtest_kwargs):
+def run_single_experiment(
+    strategy_name, params, data, df, periods, cost_bps=1.0, risk_free_rate=RISK_FREE_RATE, **backtest_kwargs
+):
     try:
         strategy = get_strategy(strategy_name)
         positions = strategy.run(data, **params)
@@ -205,7 +173,9 @@ def run_single_experiment(strategy_name, params, data, df, periods, cost_bps=1.0
                 continue
             bt = backtest(pp, pr, cost_bps=cost_bps, **backtest_kwargs)
             results[f"{pname}_metrics"] = evaluate(
-                bt["returns"], annualization=backtest_kwargs.get("annualization", 252)
+                bt["returns"],
+                risk_free_rate=risk_free_rate,
+                annualization=backtest_kwargs.get("annualization", 252),
             )
         except Exception:
             results[f"{pname}_metrics"] = {"sharpe": -99}
@@ -220,6 +190,7 @@ def run_search(
     financing_rate=0.0,
     borrow_bps=0.0,
     annualization=252,
+    risk_free_rate=RISK_FREE_RATE,
     workers=1,
     quick=False,
     top_n=50,
@@ -230,6 +201,7 @@ def run_search(
     use_cache=True,
     result_dir=None,
     run_id=None,
+    keep_all_results=True,
 ):
     """Run exhaustive strategy search for any ticker.
 
@@ -241,6 +213,7 @@ def run_search(
         financing_rate: Annual financing rate applied to held exposure.
         borrow_bps: Annualized short borrow fee in basis points.
         annualization: Return periods per year (252 for trading days, 365 for crypto).
+        risk_free_rate: Annual risk-free rate as a decimal, used in Sharpe/Sortino.
         workers: Number of parallel workers (1 = sequential).
         quick: If True, only test 5 params per strategy.
         top_n: Number of top results to keep.
@@ -251,10 +224,16 @@ def run_search(
         use_cache: If True, reuse cached OHLCV data when available.
         result_dir: Parent directory for run artifacts. Defaults to ``experiments``.
         run_id: Optional stable run directory name. A unique ID is generated by default.
+        keep_all_results: If True (default), retain every experiment in memory
+            and return it as ``all_results``.  Full grids approach a million
+            experiments (~1.3 KB each, i.e. >1 GB of RAM); pass False to
+            stream results to ``all_results.csv`` and keep only the top-N
+            ranking in memory.  ``all_results`` is then an empty list and
+            ``n_results`` carries the experiment count.
 
     Returns:
         dict with 'all_results', 'top_results', 'best', 'robustness',
-        'run_id', and 'result_dir'.
+        'run_id', 'result_dir', and 'n_results'.
     """
     # Validate up front: an invalid cost/annualization would otherwise be
     # swallowed by run_single_experiment's per-combo error handling and
@@ -286,7 +265,7 @@ def run_search(
     }
     print(f"momentum-lab: Searching optimal strategies for {ticker}")
 
-    data, df = prepare_data(ticker, start=start, end=end, use_cache=use_cache)
+    data, df = prepare_data(ticker, start=start, end=end, use_cache=use_cache, annualization=annualization)
     prices = df["close"]
     n = len(df)
     periods = _split_periods(df.index)
@@ -297,6 +276,7 @@ def run_search(
         "strategies": strategies if strategies is not None else list(STRATEGY_REGISTRY),
         "cost_bps": cost_bps,
         **backtest_kwargs,
+        "risk_free_rate": risk_free_rate,
         "workers": workers,
         "quick": quick,
         "top_n": top_n,
@@ -325,6 +305,11 @@ def run_search(
     print(f"  Strategies: {len(known)} (of {len(strategies)} requested), Total experiments: {total}")
 
     all_results = []
+    n_results = 0
+    # Bounded min-heap of (val_sharpe, seq, result) holding the current top-N.
+    # Maintained incrementally so full grids never need every result resident.
+    top_heap = []
+    seq = count()
     t0 = time.time()
 
     use_workers = workers > 1 and len(known) > 0
@@ -336,10 +321,34 @@ def run_search(
         pool = ctx.Pool(
             workers,
             initializer=_init_worker,
-            initargs=(data, df, periods, cost_bps, backtest_kwargs),
+            initargs=(data, df, periods, cost_bps, risk_free_rate, backtest_kwargs),
         )
 
     all_csv = run_dir / "all_results.csv"
+    batch = []
+
+    def _flush_batch():
+        if batch:
+            _append_results_csv(batch, all_csv, write_header=not all_csv.exists())
+            batch.clear()
+
+    def _handle(result):
+        nonlocal n_results
+        n_results += 1
+        sharpe = result.get("val_metrics", {}).get("sharpe", -99)
+        if "error" not in result and sharpe > -99:
+            entry = (sharpe, next(seq), result)
+            if len(top_heap) < top_n:
+                heapq.heappush(top_heap, entry)
+            elif sharpe > top_heap[0][0]:
+                heapq.heapreplace(top_heap, entry)
+        if keep_all_results:
+            all_results.append(result)
+        batch.append(result)
+        if len(batch) >= 10_000:
+            _flush_batch()
+
+    search_ok = False
     try:
         for sname in strategies:
             if sname not in STRATEGY_REGISTRY:
@@ -360,28 +369,34 @@ def run_search(
             )
             print(f"\n  [{cat}] {sname} ({n_combos} params) ...")
 
-            batch = []
             if pool is not None:
                 job = pool.imap_unordered(_worker_run, ((sname, p) for p in combos), chunksize=16)
                 for result in tqdm(job, desc=f"  {sname}", total=n_combos, leave=True):
-                    batch.append(result)  # noqa: PERF402 - accumulates across the strategy
+                    _handle(result)
             else:
                 for params in tqdm(combos, desc=f"  {sname}", total=n_combos, leave=True):
-                    result = run_single_experiment(sname, params, data, df, periods, cost_bps, **backtest_kwargs)
-                    batch.append({k: v for k, v in result.items() if k != "positions"})
+                    result = run_single_experiment(
+                        sname, params, data, df, periods, cost_bps, risk_free_rate, **backtest_kwargs
+                    )
+                    _handle(result)
 
-            all_results.extend(batch)
-            _append_results_csv(batch, all_csv, write_header=not all_csv.exists())
-            print(f"  [checkpoint] {sname} done, {len(all_results)} total")
+            _flush_batch()
+            print(f"  [checkpoint] {sname} done, {n_results} total")
+        search_ok = True
     finally:
         if pool is not None:
-            pool.close()
+            # On failure, terminate: close()+join() would wait for millions of
+            # queued tasks before propagating the error.
+            if search_ok:
+                pool.close()
+            else:
+                pool.terminate()
             pool.join()
 
     elapsed = time.time() - t0
-    print(f"\n  Search complete! {len(all_results)} results in {elapsed / 60:.1f} min")
+    print(f"\n  Search complete! {n_results} results in {elapsed / 60:.1f} min")
 
-    if not all_results:
+    if n_results == 0:
         print("  WARNING: No experiments completed. Check strategy names and data.")
         return {
             "all_results": [],
@@ -390,30 +405,41 @@ def run_search(
             "robustness": None,
             "run_id": run_id,
             "result_dir": str(run_dir),
+            "n_results": 0,
         }
 
     # Phase 2: Rank by val Sharpe
-    all_results = _normalize_results(all_results)
-    valid = [r for r in all_results if "error" not in r and r.get("val_metrics", {}).get("sharpe", -99) > -99]
-    valid.sort(key=lambda r: -r.get("val_metrics", {}).get("sharpe", -99))
-    top = valid[:top_n]
+    if keep_all_results:
+        valid = [r for r in all_results if "error" not in r and r.get("val_metrics", {}).get("sharpe", -99) > -99]
+        valid.sort(key=lambda r: -r.get("val_metrics", {}).get("sharpe", -99))
+        top = valid[:top_n]
+    else:
+        top = [r for _, _, r in sorted(top_heap, key=lambda e: -e[0])]
+        all_results = []
 
     # Phase 3: Test set evaluation
     if top:
         best = top[0]
         sname = best["strategy"]
         params = best.get("params", {})
-        strategy = get_strategy(sname)
-        positions = strategy.run(data, **params)
-        test_m = evaluate(
-            backtest(
-                positions.loc[periods["test"][0] : periods["test"][1]],
-                prices.loc[periods["test"][0] : periods["test"][1]],
-                cost_bps=cost_bps,
-                **backtest_kwargs,
-            )["returns"],
-            annualization=annualization,
-        )
+        # The grid run already evaluated the test window with identical cost
+        # settings; reuse those metrics instead of re-running the strategy.
+        test_m = best.get("test_metrics") or {}
+        if "cagr" not in test_m:
+            # Only the sentinel was stored (degenerate test window, e.g. zero
+            # positions); re-evaluate directly for a complete report.
+            strategy = get_strategy(sname)
+            positions = strategy.run(data, **params)
+            test_m = evaluate(
+                backtest(
+                    positions.loc[periods["test"][0] : periods["test"][1]],
+                    prices.loc[periods["test"][0] : periods["test"][1]],
+                    cost_bps=cost_bps,
+                    **backtest_kwargs,
+                )["returns"],
+                risk_free_rate=risk_free_rate,
+                annualization=annualization,
+            )
         bh_m = evaluate(
             backtest(
                 get_buy_and_hold(prices.loc[periods["test"][0] : periods["test"][1]]),
@@ -423,6 +449,7 @@ def run_search(
                 cost_bps=cost_bps,
                 **backtest_kwargs,
             )["returns"],
+            risk_free_rate=risk_free_rate,
             annualization=annualization,
         )
         print(f"\n  Best: {sname}")
@@ -447,6 +474,7 @@ def run_search(
             cost_bps=cost_bps,
             frac=robust_frac,
             backtest_kwargs=backtest_kwargs,
+            risk_free_rate=risk_free_rate,
         )
         if robustness.get("error"):
             print(f"    Skipped: {robustness['error']}")
@@ -512,4 +540,5 @@ def run_search(
         "robustness": robustness,
         "run_id": run_id,
         "result_dir": str(run_dir),
+        "n_results": n_results,
     }

@@ -120,8 +120,11 @@ def test_evaluate_metric_ranges_and_sign_consistency(rets, annualization, rf):
     assert metrics["profit_factor"] >= 0.0
     assert np.isfinite(metrics["sharpe"]) and np.isfinite(metrics["calmar"])
     # |r| <= 0.1 keeps equity strictly positive, so CAGR and total return
-    # must share a sign.
-    assert np.sign(metrics["cagr"]) == np.sign(metrics["total_return"])
+    # must share a sign.  Both are rounded to 4 dp; a near-zero total return
+    # can round to 0.0 while the annualized CAGR rounds up to 0.0001, so the
+    # sign comparison only applies away from that rounding boundary.
+    if abs(metrics["total_return"]) >= 1e-4:
+        assert np.sign(metrics["cagr"]) == np.sign(metrics["total_return"])
 
 
 @given(offsets=st.lists(st.integers(0, 500), min_size=3, max_size=60, unique=True))

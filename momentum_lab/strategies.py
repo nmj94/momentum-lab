@@ -380,8 +380,11 @@ class VolScale(BaseStrategy):
 
     def generate_positions(self, data, lookback=63, vol_lookback=21, vol_target=0.15, threshold=0.0):
         close = data["close"]
+        # Annualize with the same horizon the backtest/metrics use (365 for
+        # crypto); a hardcoded 252 would oversize positions by ~20% there.
+        ann = data.get("annualization", 252)
         ret = close.pct_change(lookback)
-        vol = close.pct_change().rolling(vol_lookback).std() * np.sqrt(252)
+        vol = close.pct_change().rolling(vol_lookback).std() * np.sqrt(ann)
         raw = pd.Series(0.0, index=close.index)
         raw[ret > threshold] = 1.0
         raw[ret < -threshold] = -1.0
@@ -569,11 +572,17 @@ class _MLBase(BaseStrategy):
     UNIVERSAL_PARAMS: ClassVar[dict] = {"position_size": [0.5, 1.0, 2.0], "signal_smooth": [0, 5]}
 
     def _prepare_data(self, data, lookback, forward, feature_cols=None):
+        """Build the (features, label) pair for walk-forward training.
+
+        ``lookback`` is not a feature window - the feature set uses fixed
+        horizons.  Callers pass it straight through to ``_walk_forward`` as
+        the initial ``train_size`` warm-up.
+        """
         from .data import compute_features
 
         close = data["close"]
         if "features" not in data or data["features"] is None:
-            feats = compute_features(pd.DataFrame({"close": close}))
+            feats = compute_features(pd.DataFrame({"close": close}), annualization=data.get("annualization", 252))
         else:
             feats = data["features"]
         if feature_cols:
@@ -1077,9 +1086,10 @@ class RegimeAware(BaseStrategy):
         low = data.get("low", close)
         adx_raw = self._compute_adx(high, low, close, 14)
         adx = adx_raw.ewm(span=adx_smooth, adjust=False).mean() if adx_smooth > 0 else adx_raw
+        ann = data.get("annualization", 252)
         dr = close.pct_change()
-        vol_f = dr.rolling(vol_fast).std() * np.sqrt(252)
-        vol_s = dr.rolling(63).std() * np.sqrt(252)
+        vol_f = dr.rolling(vol_fast).std() * np.sqrt(ann)
+        vol_s = dr.rolling(63).std() * np.sqrt(ann)
         vol_ratio = vol_f / (vol_s + 1e-10)
         ma_f = close.rolling(50).mean()
         ma_s = close.rolling(200).mean()

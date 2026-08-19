@@ -8,7 +8,7 @@ an isolated peak, neighbors collapse and the result is fragile.
 
 import numpy as np
 
-from .backtest import backtest, evaluate
+from .backtest import RISK_FREE_RATE, backtest, evaluate
 from .strategies import get_strategy
 
 _NUMERIC = (int, float, np.integer, np.floating)
@@ -41,7 +41,9 @@ def perturb_params(params: dict, frac: float = 0.2) -> list:
     return neighbors
 
 
-def _val_sharpe(strategy, data, prices, periods, params, cost_bps, backtest_kwargs=None) -> float:
+def _val_sharpe(
+    strategy, data, prices, periods, params, cost_bps, backtest_kwargs=None, risk_free_rate=RISK_FREE_RATE
+) -> float:
     try:
         positions = strategy.run(data, **params)
     except Exception:
@@ -54,6 +56,7 @@ def _val_sharpe(strategy, data, prices, periods, params, cost_bps, backtest_kwar
         kwargs = dict(backtest_kwargs or {})
         return evaluate(
             backtest(pp, pr, cost_bps=cost_bps, **kwargs)["returns"],
+            risk_free_rate=risk_free_rate,
             annualization=kwargs.get("annualization", 252),
         )["sharpe"]
     except Exception:
@@ -70,6 +73,7 @@ def robustness_check(
     frac=0.2,
     min_neighbors=4,
     backtest_kwargs=None,
+    risk_free_rate=RISK_FREE_RATE,
 ):
     """Run neighborhood perturbation and summarize stability.
 
@@ -79,8 +83,11 @@ def robustness_check(
     strategy = get_strategy(sname)
     prices = df["close"]
 
-    base = _val_sharpe(strategy, data, prices, periods, params, cost_bps, backtest_kwargs)
-    neighbors = perturb_params(params, frac=frac)
+    base = _val_sharpe(strategy, data, prices, periods, params, cost_bps, backtest_kwargs, risk_free_rate)
+    # Drop neighbors that violate the strategy's own coherence constraints
+    # (e.g. fast >= slow after perturbation).  Scoring degenerate combos
+    # biases the grade towards "fragile" for purely mechanical reasons.
+    neighbors = [nb for nb in perturb_params(params, frac=frac) if strategy.is_valid_params(nb)]
     if len(neighbors) < min_neighbors:
         return {
             "error": f"Too few numeric params to perturb ({len(neighbors)} neighbors).",
@@ -91,7 +98,10 @@ def robustness_check(
             "verdict": "Skipped",
         }
 
-    vals = [_val_sharpe(strategy, data, prices, periods, nb, cost_bps, backtest_kwargs) for nb in neighbors]
+    vals = [
+        _val_sharpe(strategy, data, prices, periods, nb, cost_bps, backtest_kwargs, risk_free_rate)
+        for nb in neighbors
+    ]
     vals = np.array([v for v in vals if v > -99], dtype=float)
     n_valid = len(vals)
 

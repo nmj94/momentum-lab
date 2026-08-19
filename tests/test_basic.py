@@ -39,8 +39,57 @@ def test_download_data_rejects_reversed_date_range():
         download_data("GLD", start="2024-06-01", end="2024-01-01", use_cache=True)
 
 
+def test_download_data_rejects_unsafe_ticker_characters(monkeypatch):
+    """URL-significant characters must be rejected before any download attempt."""
+    monkeypatch.setattr(
+        data_module.yf, "download", lambda *a, **k: pytest.fail("download must not be attempted")
+    )
+    for bad in ["GLD?inject=1", "A&B", "../x", " ", ""]:
+        with pytest.raises(ValueError, match="Invalid ticker"):
+            data_module.download_data(bad, start="2024-01-02", end="2024-01-04")
+
+
+def test_download_data_raises_when_all_prices_nan(tmp_path, monkeypatch):
+    """A download with no usable price rows must fail loudly, not return empty."""
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    monkeypatch.setattr(data_module, "DATA_DIR", data_dir)
+    index = pd.date_range("2024-01-02", periods=5, freq="B")
+    nan_frame = pd.DataFrame(
+        {
+            "Open": [np.nan] * 5,
+            "High": [np.nan] * 5,
+            "Low": [np.nan] * 5,
+            "Close": [np.nan] * 5,
+            "Volume": [100] * 5,
+        },
+        index=index,
+    )
+    monkeypatch.setattr(data_module.yf, "download", lambda *a, **k: nan_frame)
+
+    with pytest.raises(ValueError, match="no usable data"):
+        data_module.download_data("GLD", start="2024-01-02", end="2024-01-08")
+
+    assert not (data_dir / "GLD_daily.csv").exists()
+
+
+def test_download_data_keeps_rows_with_missing_volume(tmp_path, monkeypatch):
+    """NaN volume (common for indices) must not punch holes in the price series."""
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    monkeypatch.setattr(data_module, "DATA_DIR", data_dir)
+    index = pd.date_range("2024-01-02", periods=5, freq="B")
+    frame = _fake_yf_download(index)
+    frame.loc[index[2], "Volume"] = np.nan
+    monkeypatch.setattr(data_module.yf, "download", lambda *a, **k: frame)
+
+    df = data_module.download_data("GLD", start="2024-01-02", end="2024-01-08")
+
+    assert len(df) == 5
+
+
 def test_download_data_sanitizes_cache_filename(tmp_path, monkeypatch):
-    """Ticker input must not allow cache files outside the data directory."""
+    """Valid-but-symbolic tickers (e.g. ^GSPC) must map to safe cache filenames."""
     data_dir = tmp_path / "data"
     monkeypatch.setattr(data_module, "DATA_DIR", data_dir)
     index = pd.date_range("2024-01-02", periods=3, freq="B")
@@ -56,10 +105,9 @@ def test_download_data_sanitizes_cache_filename(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(data_module.yf, "download", lambda *args, **kwargs: downloaded)
 
-    data_module.download_data("../../escape", start="2024-01-02", end="2024-01-04")
+    data_module.download_data("^GSPC", start="2024-01-02", end="2024-01-04")
 
-    assert (data_dir / ".._.._escape_daily.csv").exists()
-    assert not (tmp_path / "escape_daily.csv").exists()
+    assert (data_dir / "_GSPC_daily.csv").exists()
 
 
 def _fake_yf_download(index, base=1.0):
@@ -411,6 +459,95 @@ def test_run_search_warns_about_unknown_strategies(tmp_path, monkeypatch, capsys
     assert "WARNING: Unknown strategy 'not_a_strategy'" in capsys.readouterr().out
     evaluated = {r["strategy"] for r in result["all_results"]}
     assert evaluated == {"tsmom"}
+
+
+def test_run_search_streams_results_when_keep_all_disabled(tmp_path, monkeypatch):
+    """keep_all_results=False must stream to CSV and keep only the top-N ranking."""
+    _monkeypatch_market_data(monkeypatch)
+
+    result = search_module.run_search(
+        ticker="FAKE",
+        strategies=["tsmom"],
+        quick=True,
+        robust=False,
+        result_dir=tmp_path,
+        run_id="stream",
+        keep_all_results=False,
+    )
+
+    assert result["all_results"] == []
+    assert result["n_results"] == 5
+    assert result["best"] is not None
+    assert result["best"]["strategy"] == "tsmom"
+    assert len(result["top_results"]) == 5
+    csv_rows = pd.read_csv(tmp_path / "stream" / "all_results.csv")
+    assert len(csv_rows) == 5
+
+
+def test_run_search_records_risk_free_rate(tmp_path, monkeypatch):
+    """The configured risk-free rate must land in run_config.json."""
+    import json
+
+    _monkeypatch_market_data(monkeypatch)
+
+    search_module.run_search(
+        ticker="FAKE",
+        strategies=["tsmom"],
+        quick=True,
+        robust=False,
+        result_dir=tmp_path,
+        run_id="rf",
+        risk_free_rate=0.1,
+    )
+
+    config = json.loads((tmp_path / "rf" / "run_config.json").read_text(encoding="utf-8"))
+    assert config["risk_free_rate"] == 0.1
+
+
+def test_single_experiment_uses_risk_free_rate():
+    """A higher risk-free rate must strictly lower the reported Sharpe."""
+    from momentum_lab.search import run_single_experiment
+
+    data = _mk_data(600)
+    df = pd.DataFrame({"close": data["close"]})
+    periods = _split_periods(df.index)
+    params = {"lookback": 21, "threshold": 0.0, "long_short": True, "skip_recent": 0}
+
+    low_rf = run_single_experiment("tsmom", params, data, df, periods, risk_free_rate=0.0)
+    high_rf = run_single_experiment("tsmom", params, data, df, periods, risk_free_rate=0.2)
+
+    assert high_rf["val_metrics"]["sharpe"] < low_rf["val_metrics"]["sharpe"]
+
+
+def test_cli_passes_new_options(monkeypatch):
+    """New CLI flags must be wired through to run_search."""
+    from momentum_lab import cli
+
+    captured = {}
+    monkeypatch.setattr(cli, "run_search", lambda **kwargs: captured.update(kwargs))
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "momentum-lab",
+            "GLD",
+            "--quick",
+            "--no-robust",
+            "--risk-free-rate",
+            "0.05",
+            "--result-dir",
+            "/tmp/ml-out",
+            "--run-id",
+            "myrun",
+            "--no-keep-all",
+        ],
+    )
+
+    cli.main()
+
+    assert captured["risk_free_rate"] == 0.05
+    assert captured["result_dir"] == "/tmp/ml-out"
+    assert captured["run_id"] == "myrun"
+    assert captured["keep_all_results"] is False
 
 
 def test_quick_sample_spreads_across_the_grid():
@@ -858,6 +995,83 @@ def test_ml_walk_forward_skips_single_class_training_windows():
     preds = get_strategy("ml_logreg")._walk_forward(feats, label, unexpected_model, train_size=5, step=5)
 
     assert preds.isna().all()
+
+
+def test_robustness_skips_incoherent_neighbors(monkeypatch):
+    """Perturbed neighbors violating the strategy's own constraints must not be scored.
+
+    Otherwise degenerate combos (e.g. fast >= slow) drag the grade towards
+    'fragile' for purely mechanical reasons.
+    """
+    import momentum_lab.robustness as rob_mod
+
+    close = pd.Series(np.random.randn(300).cumsum() + 100)
+    data = {"close": close, "high": close + 1, "low": close - 1}
+    df = pd.DataFrame({"close": close})
+    periods = {
+        "train": (df.index[0], df.index[170]),
+        "val": (df.index[170], df.index[240]),
+        "test": (df.index[240], df.index[-1]),
+    }
+    evaluated = []
+
+    def record(strategy, data, prices, periods, params, cost_bps, backtest_kwargs=None, risk_free_rate=0.04):
+        evaluated.append(params)
+        return 1.0
+
+    monkeypatch.setattr(rob_mod, "_val_sharpe", record)
+    report = rob_mod.robustness_check(
+        data,
+        df,
+        periods,
+        "ma_cross",
+        {"fast": 25, "slow": 30, "long_short": True, "ma_type": "sma", "position_size": 1.0, "signal_smooth": 3},
+        cost_bps=1.0,
+    )
+
+    strategy = get_strategy("ma_cross")
+    assert report["error"] is None
+    assert len(evaluated) > 1  # baseline + surviving neighbors
+    assert all(strategy.is_valid_params(p) for p in evaluated)
+
+
+def test_vol_scale_respects_data_annualization():
+    """Strategy vol scaling must use the data dict's annualization, not a hardcoded 252."""
+    close = pd.Series(100 * np.exp(np.random.default_rng(3).normal(0, 0.02, 300).cumsum()))
+    kwargs = {"lookback": 63, "vol_lookback": 21, "vol_target": 0.15}
+    strategy = get_strategy("vol_scale_mom")
+
+    pos_252 = strategy.generate_positions({"close": close}, **kwargs)
+    pos_365 = strategy.generate_positions({"close": close, "annualization": 365}, **kwargs)
+
+    # Higher annualization => larger estimated vol => smaller scaling factor.
+    assert pos_365.abs().mean() < pos_252.abs().mean()
+
+
+def test_regime_aware_respects_data_annualization():
+    close = pd.Series(100 * np.exp(np.random.default_rng(4).normal(0, 0.02, 300).cumsum()))
+    data_252 = {"close": close, "high": close + 1, "low": close - 1}
+    data_365 = {**data_252, "annualization": 365}
+    strategy = get_strategy("regime_aware")
+
+    pos_252 = strategy.generate_positions(data_252)
+    pos_365 = strategy.generate_positions(data_365)
+
+    assert not np.allclose(pos_252.to_numpy(), pos_365.to_numpy())
+
+
+def test_prepare_data_threads_annualization(monkeypatch):
+    """prepare_data must expose annualization in the data dict and the vol features."""
+    idx = pd.date_range("2020-01-01", periods=300, freq="B")
+    close = pd.Series(100 + np.random.default_rng(1).normal(0, 1, 300).cumsum(), index=idx)
+    fake = pd.DataFrame({"open": close, "high": close, "low": close, "close": close, "volume": 1.0})
+    monkeypatch.setattr(data_module, "download_data", lambda *a, **k: fake)
+
+    data, _ = data_module.prepare_data("FAKE", annualization=365)
+
+    assert data["annualization"] == 365
+    expected = close.pct_change().rolling(21).std() * np.sqrt(365)
+    assert np.allclose(data["features"]["vol_21"].dropna(), expected.dropna())
 
 
 def test_perturb_params_int_float():
