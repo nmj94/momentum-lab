@@ -584,6 +584,19 @@ def test_evaluate():
     assert isinstance(metrics["sharpe"], float)
 
 
+def test_evaluate_strategy_threads_risk_free_rate():
+    """evaluate_strategy must accept risk_free_rate instead of crashing in backtest."""
+    from momentum_lab.backtest import evaluate_strategy
+
+    prices = pd.Series(np.random.default_rng(1).normal(0, 1, 200).cumsum() + 100)
+    positions = pd.Series(1.0, index=prices.index)
+
+    low_rf = evaluate_strategy(positions, prices, risk_free_rate=0.0)["metrics"]
+    high_rf = evaluate_strategy(positions, prices, risk_free_rate=0.2)["metrics"]
+
+    assert high_rf["sharpe"] < low_rf["sharpe"]
+
+
 def test_strategies_registry():
     """Test strategy registry."""
     assert len(STRATEGY_REGISTRY) >= 26

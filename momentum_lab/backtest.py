@@ -170,10 +170,18 @@ def evaluate(
     }
 
 
-def evaluate_strategy(positions: pd.Series, prices: pd.Series, **bt_kwargs) -> dict:
-    """Backtest + evaluate in one step."""
+def evaluate_strategy(positions: pd.Series, prices: pd.Series, risk_free_rate: float = RISK_FREE_RATE, **bt_kwargs) -> dict:
+    """Backtest + evaluate in one step.
+
+    ``risk_free_rate`` is consumed by ``evaluate``; everything else is
+    forwarded to ``backtest``.
+    """
     result = backtest(positions, prices, **bt_kwargs)
-    result["metrics"] = evaluate(result["returns"], annualization=bt_kwargs.get("annualization", 252))
+    result["metrics"] = evaluate(
+        result["returns"],
+        risk_free_rate=risk_free_rate,
+        annualization=bt_kwargs.get("annualization", 252),
+    )
     return result
 
 

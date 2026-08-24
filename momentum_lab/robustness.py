@@ -18,7 +18,7 @@ def perturb_params(params: dict, frac: float = 0.2) -> list:
     """Build neighbor parameter sets by perturbing numeric params by +/-frac.
 
     Booleans, strings and tuple/array params are kept fixed. Integer params are
-    nudge by at least 1 (or by frac when the value is large).
+    nudged by at least 1 (or by frac when the value is large).
     """
     neighbors = []
     for key, val in params.items():

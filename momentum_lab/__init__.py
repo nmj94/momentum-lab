@@ -1,6 +1,6 @@
 """momentum-lab: Autonomous momentum strategy research."""
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 from .backtest import backtest, evaluate, evaluate_strategy
 from .data import download_data, prepare_data

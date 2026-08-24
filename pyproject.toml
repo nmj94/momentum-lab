@@ -1,6 +1,6 @@
 [project]
 name = "momentum-lab"
-version = "0.2.0"
+version = "0.3.0"
 description = "Autonomous momentum strategy research - just provide a ticker, find the optimal strategy"
 readme = "README.md"
 license = {text = "MIT"}
