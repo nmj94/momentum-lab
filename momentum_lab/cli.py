@@ -22,7 +22,13 @@ def main():
         "ticker",
         nargs="?",
         default=None,
-        help="Yahoo Finance ticker (e.g. GLD, SPY, BTC-USD, AAPL). Omit when using --list.",
+        help="Yahoo Finance ticker (e.g. GLD, SPY, BTC-USD, AAPL). Optional with --config.",
+    )
+    parser.add_argument(
+        "--config", type=str, default=None, help="JSON search config; its values take precedence over CLI defaults"
+    )
+    parser.add_argument(
+        "--resume", action="store_true", help="Resume an existing --run-id from all_results.csv"
     )
     parser.add_argument("--quick", action="store_true", help="Quick mode: 5 params per strategy")
     parser.add_argument("--strategies", type=str, default=None, help="Comma-separated strategy names (default: all)")
@@ -71,15 +77,15 @@ def main():
         list_strategies()
         return
 
-    if not args.ticker:
-        parser.error("ticker is required (e.g. momentum-lab GLD). Use --list to see strategies.")
+    if not args.ticker and not args.config:
+        parser.error("ticker is required unless --config is provided. Use --list to see strategies.")
 
     strategies = None
     if args.strategies:
         strategies = [s.strip() for s in args.strategies.split(",")]
 
     run_search(
-        ticker=args.ticker,
+        ticker=args.ticker or "GLD",
         strategies=strategies,
         cost_bps=args.cost,
         slippage_bps=args.slippage,
@@ -98,6 +104,8 @@ def main():
         result_dir=args.result_dir,
         run_id=args.run_id,
         keep_all_results=args.keep_all_results,
+        config=args.config,
+        resume=args.resume,
     )
 
 

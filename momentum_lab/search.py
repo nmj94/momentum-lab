@@ -1,7 +1,9 @@
 """search.py - Exhaustive parameter search engine."""
 
+import hashlib
 import heapq
 import json
+import subprocess
 import time
 from datetime import datetime, timezone
 from itertools import count
@@ -12,6 +14,7 @@ import numpy as np
 import pandas as pd
 
 from .backtest import RISK_FREE_RATE, backtest, evaluate, get_buy_and_hold
+from .config import load_search_config
 from .data import prepare_data
 from .robustness import robustness_check
 from .strategies import STRATEGY_REGISTRY, get_strategy
@@ -49,6 +52,8 @@ def _jsonable(v):
         return float(v)
     if isinstance(v, (np.bool_,)):
         return bool(v)
+    if isinstance(v, dict):
+        return {str(k): _jsonable(value) for k, value in v.items()}
     if isinstance(v, (list, tuple)):
         return [_jsonable(x) for x in v]
     return v
@@ -74,12 +79,37 @@ def _params_to_str(params):
     return ", ".join(parts)
 
 
+def _git_revision():
+    """Return the source revision, or ``unknown`` outside a Git checkout."""
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=Path(__file__).resolve().parent.parent,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+    revision = completed.stdout.strip()
+    return revision or "unknown"
+
+
+def _data_snapshot(df):
+    """Return a stable content hash for the prepared data frame."""
+    digest = hashlib.sha256()
+    digest.update("\x1f".join(map(str, df.columns)).encode("utf-8"))
+    digest.update(pd.util.hash_pandas_object(df, index=True).to_numpy().tobytes())
+    return digest.hexdigest()
+
+
 def _results_rows(results):
     rows = []
     for r in results:
         row = {
             "strategy": r.get("strategy", ""),
             "params": json.dumps(r.get("params", {}), ensure_ascii=False, default=_jsonable),
+            "error": r.get("error", ""),
         }
         for period in ["train", "val", "test"]:
             m = r.get(f"{period}_metrics", {})
@@ -106,6 +136,66 @@ def _append_results_csv(results, path, write_header):
         # BOM only belongs at the very start of the file.
         encoding="utf-8-sig" if write_header else "utf-8",
     )
+
+
+def _params_key(strategy, params):
+    """Return a stable key for identifying a completed grid point."""
+    canonical = json.dumps(
+        _jsonable(params), sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=_jsonable
+    )
+    return f"{strategy}\0{canonical}"
+
+
+def _load_checkpoint(path):
+    """Load checkpoint rows written by ``_append_results_csv``.
+
+    Checkpoints deliberately use a flat CSV so they remain inspectable without
+    importing the package.  This parser restores the nested result shape used
+    by the ranking phase and accepts older files that do not have ``error``.
+    """
+    if not path.exists():
+        return []
+    try:
+        frame = pd.read_csv(path)
+    except (OSError, ValueError, pd.errors.ParserError) as exc:
+        raise ValueError(f"cannot read search checkpoint {path}: {exc}") from exc
+    if frame.empty:
+        return []
+    required = {"strategy", "params"}
+    missing = required - set(frame.columns)
+    if missing:
+        names = ", ".join(sorted(missing))
+        raise ValueError(f"search checkpoint {path} is missing column(s): {names}")
+
+    results = []
+    for row in frame.to_dict("records"):
+        raw_params = row.get("params", "{}")
+        try:
+            params = json.loads(raw_params) if isinstance(raw_params, str) else raw_params
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise ValueError(f"search checkpoint {path} contains invalid params JSON") from exc
+        if not isinstance(params, dict):
+            raise TypeError(f"search checkpoint {path} contains non-object params")
+        result = {
+            "strategy": str(row.get("strategy", "")),
+            "params": params,
+            "train_metrics": {},
+            "val_metrics": {},
+            "test_metrics": {},
+        }
+        error = row.get("error", "")
+        if pd.notna(error) and str(error):
+            result["error"] = str(error)
+        for period in ("train", "val", "test"):
+            prefix = f"{period}_"
+            metrics = result[f"{period}_metrics"]
+            for key, value in row.items():
+                if not key.startswith(prefix) or pd.isna(value):
+                    continue
+                metric_name = key[len(prefix) :]
+                metrics[metric_name] = float(value) if isinstance(value, (int, float, np.number)) else value
+        results.append(result)
+    return results
 
 
 def _split_periods(index):
@@ -202,6 +292,8 @@ def run_search(
     result_dir=None,
     run_id=None,
     keep_all_results=True,
+    config=None,
+    resume=False,
 ):
     """Run exhaustive strategy search for any ticker.
 
@@ -230,11 +322,37 @@ def run_search(
             stream results to ``all_results.csv`` and keep only the top-N
             ranking in memory.  ``all_results`` is then an empty list and
             ``n_results`` carries the experiment count.
+        config: Optional :class:`SearchConfig`, mapping, or JSON path.  When
+            provided, its fields are used as the complete search configuration.
+        resume: If True, reuse completed rows in ``all_results.csv`` for the
+            explicit ``run_id`` and evaluate only missing parameter combinations.
 
     Returns:
         dict with 'all_results', 'top_results', 'best', 'robustness',
         'run_id', 'result_dir', and 'n_results'.
     """
+    if config is not None:
+        configured = load_search_config(config).to_kwargs()
+        ticker = configured["ticker"]
+        strategies = configured["strategies"]
+        cost_bps = configured["cost_bps"]
+        slippage_bps = configured["slippage_bps"]
+        financing_rate = configured["financing_rate"]
+        borrow_bps = configured["borrow_bps"]
+        annualization = configured["annualization"]
+        risk_free_rate = configured["risk_free_rate"]
+        workers = configured["workers"]
+        quick = configured["quick"]
+        top_n = configured["top_n"]
+        start = configured["start"]
+        end = configured["end"]
+        robust = configured["robust"]
+        robust_frac = configured["robust_frac"]
+        use_cache = configured["use_cache"]
+        result_dir = configured["result_dir"]
+        run_id = configured["run_id"]
+        keep_all_results = configured["keep_all_results"]
+
     # Validate up front: an invalid cost/annualization would otherwise be
     # swallowed by run_single_experiment's per-combo error handling and
     # silently turn the whole run into sentinel (-99) results.
@@ -248,6 +366,8 @@ def run_search(
         raise ValueError("workers must be at least 1")
     if not 0 < robust_frac <= 1:
         raise ValueError("robust_frac must be in (0, 1]")
+    if resume and not run_id:
+        raise ValueError("resume requires an explicit run_id")
 
     base_result_dir = Path(result_dir) if result_dir is not None else RESULT_DIR
     safe_ticker = str(ticker).replace("/", "_").replace("^", "_")
@@ -285,7 +405,14 @@ def run_search(
         "data_start": str(df.index[0]),
         "data_end": str(df.index[-1]),
         "n_bars": n,
+        "git_sha": _git_revision(),
+        "data_snapshot": _data_snapshot(df),
         "periods": {name: [str(bounds[0]), str(bounds[1])] for name, bounds in periods.items()},
+        "robust": robust,
+        "robust_frac": robust_frac,
+        "use_cache": use_cache,
+        "keep_all_results": keep_all_results,
+        "resume": resume,
     }
     (run_dir / "run_config.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"  Data: {df.index[0].date()} ~ {df.index[-1].date()}, {n} bars")
@@ -306,11 +433,38 @@ def run_search(
 
     all_results = []
     n_results = 0
+    n_skipped = 0
     # Bounded min-heap of (val_sharpe, seq, result) holding the current top-N.
     # Maintained incrementally so full grids never need every result resident.
     top_heap = []
     seq = count()
     t0 = time.time()
+    all_csv = run_dir / "all_results.csv"
+
+    def _offer_top(result):
+        sharpe = result.get("val_metrics", {}).get("sharpe", -99)
+        if "error" not in result and sharpe > -99:
+            entry = (sharpe, next(seq), result)
+            if len(top_heap) < top_n:
+                heapq.heappush(top_heap, entry)
+            elif sharpe > top_heap[0][0]:
+                heapq.heapreplace(top_heap, entry)
+
+    completed_keys = set()
+    if resume:
+        checkpoint_results = _load_checkpoint(all_csv)
+        for previous in checkpoint_results:
+            key = _params_key(previous.get("strategy", ""), previous.get("params", {}))
+            if key in completed_keys:
+                continue
+            completed_keys.add(key)
+            n_skipped += 1
+            n_results += 1
+            _offer_top(previous)
+            if keep_all_results:
+                all_results.append(previous)
+        if checkpoint_results:
+            print(f"  Resume: loaded {n_skipped} completed experiments from {all_csv}")
 
     use_workers = workers > 1 and len(known) > 0
     pool = None
@@ -324,7 +478,6 @@ def run_search(
             initargs=(data, df, periods, cost_bps, risk_free_rate, backtest_kwargs),
         )
 
-    all_csv = run_dir / "all_results.csv"
     batch = []
 
     def _flush_batch():
@@ -335,13 +488,8 @@ def run_search(
     def _handle(result):
         nonlocal n_results
         n_results += 1
-        sharpe = result.get("val_metrics", {}).get("sharpe", -99)
-        if "error" not in result and sharpe > -99:
-            entry = (sharpe, next(seq), result)
-            if len(top_heap) < top_n:
-                heapq.heappush(top_heap, entry)
-            elif sharpe > top_heap[0][0]:
-                heapq.heapreplace(top_heap, entry)
+        completed_keys.add(_params_key(result.get("strategy", ""), result.get("params", {})))
+        _offer_top(result)
         if keep_all_results:
             all_results.append(result)
         batch.append(result)
@@ -362,6 +510,8 @@ def run_search(
                 # combinations and must not be materialized as a list.
                 combos = s.iter_param_combinations()
                 n_combos = s.count_param_combinations()
+            if resume:
+                combos = (params for params in combos if _params_key(sname, params) not in completed_keys)
             cat = (
                 "ML"
                 if sname.startswith("ml_")
@@ -384,6 +534,9 @@ def run_search(
             print(f"  [checkpoint] {sname} done, {n_results} total")
         search_ok = True
     finally:
+        # Persist whatever was completed before an interruption so --resume
+        # can pick up even when a strategy does not reach its normal checkpoint.
+        _flush_batch()
         if pool is not None:
             # On failure, terminate: close()+join() would wait for millions of
             # queued tasks before propagating the error.
@@ -406,6 +559,7 @@ def run_search(
             "run_id": run_id,
             "result_dir": str(run_dir),
             "n_results": 0,
+            "n_skipped": n_skipped,
         }
 
     # Phase 2: Rank by val Sharpe
@@ -541,4 +695,5 @@ def run_search(
         "run_id": run_id,
         "result_dir": str(run_dir),
         "n_results": n_results,
+        "n_skipped": n_skipped,
     }

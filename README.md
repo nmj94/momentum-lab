@@ -26,6 +26,32 @@ momentum-lab BTC-USD --workers 4
 momentum-lab AAPL --strategies tsmom,ma_cross,rsi,regime_aware
 ```
 
+### Config-driven and resumable runs (P1)
+
+Store a research run as JSON so the same configuration can be reproduced
+locally, in CI, or by a later job:
+
+```bash
+momentum-lab --config examples/search_config.json
+momentum-lab --config examples/search_config.json --resume
+```
+
+`--resume` reads completed combinations from
+`result_dir/run_id/all_results.csv` and evaluates only missing combinations,
+so the config should pin a stable `run_id`. Config fields take precedence over
+CLI defaults. The Python API accepts the same JSON path, a mapping, or a
+`SearchConfig` instance:
+
+```python
+from momentum_lab import SearchConfig, run_search
+
+config = SearchConfig(ticker="GLD", strategies=["tsmom"], quick=True,
+                      robust=False, result_dir="experiments", run_id="gld-p1")
+result = run_search(config=config)
+resumed = run_search(config=config, resume=True)
+print(resumed["n_skipped"], "experiments loaded from checkpoint")
+```
+
 ## How It Works
 
 ```
@@ -149,6 +175,8 @@ Arguments:
 
 Options:
   --quick             Quick mode: 5 params per strategy
+  --config PATH       Load a complete JSON search config (config wins)
+  --resume            Resume the selected run-id from all_results.csv
   --strategies STR    Comma-separated strategy names
   --workers N         Parallel workers (default: 1)
   --cost BPS          Transaction cost in basis points (default: 1.0)
@@ -206,8 +234,8 @@ pip install -e .
 ## Output
 
 After running, results are saved to `experiments/<run_id>/`; each run is isolated:
-- `run_config.json` - Data range, cost model, parameters, and split configuration
-- `all_results.csv` - Every experiment with train/val/test metrics
+- `run_config.json` - Data range, cost model, parameters, split configuration, Git SHA, and data snapshot hash
+- `all_results.csv` - Every experiment with train/val/test metrics; also the resume checkpoint
 - `top_results.csv` - Top N strategies by validation Sharpe
 - `robustness.csv` - Robustness check summary for the best strategy
 - Console output shows the best strategy with parameters and test set performance

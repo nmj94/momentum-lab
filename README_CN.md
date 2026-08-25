@@ -25,6 +25,27 @@ momentum-lab BTC-USD --workers 4
 momentum-lab AAPL --strategies tsmom,ma_cross,rsi,regime_aware
 ```
 
+### 配置驱动与断点续跑（P1）
+
+把一次研究运行写成 JSON，可以在本地、CI 或后续任务中复现同一组参数：
+
+```bash
+momentum-lab --config examples/search_config.json
+momentum-lab --config examples/search_config.json --resume
+```
+
+`--resume` 会读取同一 `result_dir/run_id/all_results.csv` 中已经完成的组合，只运行缺失组合；因此需要在配置中固定 `run_id`。配置文件中的字段优先于命令行默认值，支持的字段与 `SearchConfig` 一致。也可以直接在 Python API 中传入 `SearchConfig`、字典或 JSON 路径：
+
+```python
+from momentum_lab import SearchConfig, run_search
+
+config = SearchConfig(ticker="GLD", strategies=["tsmom"], quick=True,
+                      robust=False, result_dir="experiments", run_id="gld-p1")
+result = run_search(config=config)
+resumed = run_search(config=config, resume=True)
+print(resumed["n_skipped"], "experiments loaded from checkpoint")
+```
+
 ## 工作原理
 
 ```
@@ -148,6 +169,8 @@ momentum-lab TICKER [选项]
 
 选项:
   --quick             快速模式：每种策略只测 5 组参数
+  --config PATH       从 JSON 加载完整搜索配置（配置值优先）
+  --resume            从指定 run-id 的 all_results.csv 断点续跑
   --strategies STR    指定策略名称（逗号分隔）
   --workers N         并行进程数（默认 1）
   --cost BPS          交易成本，基点（默认 1.0）
@@ -203,8 +226,8 @@ pip install -e .
 ## 输出结果
 
 运行后，结果保存在 `experiments/<run_id>/` 目录，每次运行独立保存：
-- `run_config.json` - 数据区间、成本模型、参数和切分配置
-- `all_results.csv` - 所有实验结果（含训练/验证/测试指标）
+- `run_config.json` - 数据区间、成本模型、参数、切分配置、Git SHA 和数据快照哈希
+- `all_results.csv` - 所有实验结果（含训练/验证/测试指标），也是断点续跑检查点
 - `top_results.csv` - 按验证集 Sharpe 排序的前 N 个策略
 - `robustness.csv` - 最优策略的稳健性检验汇总
 - 控制台输出最优策略的参数和测试集表现

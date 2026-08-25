@@ -1,5 +1,7 @@
 """Basic tests for momentum-lab."""
 
+import json
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -439,6 +441,9 @@ def test_run_search_smoke_and_artifacts(tmp_path, monkeypatch):
     assert (tmp_path / "smoke" / "run_config.json").exists()
     assert (tmp_path / "smoke" / "all_results.csv").exists()
     assert (tmp_path / "smoke" / "top_results.csv").exists()
+    run_config = json.loads((tmp_path / "smoke" / "run_config.json").read_text(encoding="utf-8"))
+    assert len(run_config["data_snapshot"]) == 64
+    assert run_config["git_sha"] != "unknown"
     evaluated = {r["strategy"] for r in result["all_results"]}
     assert evaluated == {"tsmom", "dual_momentum"}
 
@@ -486,8 +491,6 @@ def test_run_search_streams_results_when_keep_all_disabled(tmp_path, monkeypatch
 
 def test_run_search_records_risk_free_rate(tmp_path, monkeypatch):
     """The configured risk-free rate must land in run_config.json."""
-    import json
-
     _monkeypatch_market_data(monkeypatch)
 
     search_module.run_search(
@@ -502,6 +505,100 @@ def test_run_search_records_risk_free_rate(tmp_path, monkeypatch):
 
     config = json.loads((tmp_path / "rf" / "run_config.json").read_text(encoding="utf-8"))
     assert config["risk_free_rate"] == 0.1
+
+
+def test_search_config_roundtrip_and_unknown_field(tmp_path):
+    """JSON configs must round-trip and reject misspelled options."""
+    from momentum_lab.config import SearchConfig, load_search_config
+
+    path = tmp_path / "search.json"
+    path.write_text(
+        '{"ticker": "SPY", "strategies": "tsmom, rsi", "quick": true, "run_id": "p1"}',
+        encoding="utf-8",
+    )
+    config = load_search_config(path)
+    assert config.ticker == "SPY"
+    assert config.strategies == ["tsmom", "rsi"]
+    assert config.to_dict()["run_id"] == "p1"
+
+    with pytest.raises(ValueError, match="unknown search config field"):
+        SearchConfig.from_mapping({"tickre": "SPY"})
+
+
+def test_run_search_resume_skips_completed_combinations(tmp_path, monkeypatch):
+    """A resumed run must load the checkpoint without re-running old combos."""
+    _monkeypatch_market_data(monkeypatch)
+    config = {
+        "ticker": "FAKE",
+        "strategies": ["tsmom"],
+        "quick": True,
+        "robust": False,
+        "result_dir": str(tmp_path),
+        "run_id": "resume",
+    }
+    first = search_module.run_search(config=config)
+    assert first["n_results"] == 5
+
+    monkeypatch.setattr(
+        search_module,
+        "run_single_experiment",
+        lambda *args, **kwargs: pytest.fail("completed combinations must not run again"),
+    )
+    resumed = search_module.run_search(config=config, resume=True)
+
+    assert resumed["n_results"] == 5
+    assert resumed["n_skipped"] == 5
+    assert len(resumed["all_results"]) == 5
+    assert resumed["best"] is not None
+
+
+def test_run_search_flushes_partial_checkpoint_on_failure(tmp_path, monkeypatch):
+    """An interrupted strategy still leaves completed rows available to resume."""
+    _monkeypatch_market_data(monkeypatch)
+    config = {
+        "ticker": "FAKE",
+        "strategies": ["tsmom"],
+        "quick": True,
+        "robust": False,
+        "result_dir": str(tmp_path),
+        "run_id": "partial",
+    }
+    original = search_module.run_single_experiment
+    calls = 0
+
+    def fail_after_two(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls > 2:
+            raise RuntimeError("simulated interruption")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(search_module, "run_single_experiment", fail_after_two)
+    with pytest.raises(RuntimeError, match="simulated interruption"):
+        search_module.run_search(config=config)
+
+    checkpoint = pd.read_csv(tmp_path / "partial" / "all_results.csv")
+    assert len(checkpoint) == 2
+
+    monkeypatch.setattr(search_module, "run_single_experiment", original)
+    resumed = search_module.run_search(config=config, resume=True)
+    assert resumed["n_skipped"] == 2
+    assert resumed["n_results"] == 5
+
+
+def test_cli_accepts_config_without_ticker(monkeypatch):
+    """A JSON config can provide the ticker and all run options."""
+    from momentum_lab import cli
+
+    captured = {}
+    monkeypatch.setattr(cli, "run_search", lambda **kwargs: captured.update(kwargs))
+    monkeypatch.setattr("sys.argv", ["momentum-lab", "--config", "search.json", "--resume"])
+
+    cli.main()
+
+    assert captured["ticker"] == "GLD"
+    assert captured["config"] == "search.json"
+    assert captured["resume"] is True
 
 
 def test_single_experiment_uses_risk_free_rate():

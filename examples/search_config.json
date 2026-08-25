@@ -1,0 +1,9 @@
+{
+  "ticker": "GLD",
+  "strategies": ["tsmom", "ma_cross"],
+  "quick": true,
+  "robust": false,
+  "result_dir": "experiments",
+  "run_id": "gld-p1-example",
+  "keep_all_results": false
+}
