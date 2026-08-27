@@ -36,6 +36,13 @@ def perturb_params(params: dict, frac: float = 0.2) -> list:
                 nv = round(nv)
                 if nv == int(val):
                     nv = int(val) + (1 if delta > 0 else -1)
+                # A non-negative original (window lengths, skip counts,
+                # smoothing spans) has no meaningful negative neighbor: the
+                # strategy either raises on it or - worse - treats it exactly
+                # like zero, silently re-scoring the baseline and flattering
+                # the robustness statistics.
+                if val >= 0 and nv < 0:
+                    continue
             new[key] = nv
             neighbors.append(new)
     return neighbors

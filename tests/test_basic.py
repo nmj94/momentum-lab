@@ -407,6 +407,36 @@ def test_vol_ratio_features_survive_zero_volume():
     assert (feats["vol_ratio_5"].iloc[20:30] == 0.0).all()
 
 
+def test_vol_ratio_features_survive_nan_volume():
+    """NaN volume (indices, sparse feeds) must not poison vol_ratio features."""
+    n = 60
+    df = pd.DataFrame(
+        {
+            "close": 100.0 + np.arange(n) * 0.1,
+            "volume": np.where((np.arange(n) >= 20) & (np.arange(n) < 30), np.nan, 1000.0),
+        }
+    )
+
+    feats = compute_features(df)
+
+    # NaN only during the inherent rolling(5) warm-up, never from NaN volume.
+    assert feats["vol_ratio_5"].iloc[4:].notna().all()
+
+
+def test_ml_strategy_survives_all_nan_volume():
+    """An all-NaN volume column must not silently flatten every ML position."""
+    n = 320
+    index = pd.date_range("2021-01-01", periods=n, freq="B")
+    rng = np.random.default_rng(0)
+    close = pd.Series(100 * np.cumprod(1 + rng.normal(0, 0.01, n)), index=index)
+    feats = compute_features(pd.DataFrame({"close": close, "volume": np.nan}, index=index))
+    data = {"close": close, "features": feats, "annualization": 252}
+
+    positions = get_strategy("ml_nb").generate_positions(data, lookback=42, forward=5)
+
+    assert (positions != 0).sum() > 0
+
+
 def test_donchian_holds_until_exit_channel_break():
     """Donchian entries must persist until the (tighter) exit channel breaks."""
     close = pd.Series(
@@ -584,6 +614,46 @@ def test_run_search_flushes_partial_checkpoint_on_failure(tmp_path, monkeypatch)
     resumed = search_module.run_search(config=config, resume=True)
     assert resumed["n_skipped"] == 2
     assert resumed["n_results"] == 5
+
+
+def test_run_search_resume_rejects_mismatched_config(tmp_path, monkeypatch):
+    """Resume must refuse to mix metrics computed under a different cost model."""
+    _monkeypatch_market_data(monkeypatch)
+    config = {
+        "ticker": "FAKE",
+        "strategies": ["tsmom"],
+        "quick": True,
+        "robust": False,
+        "result_dir": str(tmp_path),
+        "run_id": "resume-guard",
+    }
+    search_module.run_search(config=config)
+
+    changed = dict(config, cost_bps=5.0)
+    with pytest.raises(ValueError, match="resume configuration mismatch"):
+        search_module.run_search(config=changed, resume=True)
+
+
+def test_run_search_rerun_backs_up_previous_checkpoint(tmp_path, monkeypatch):
+    """Reusing a run_id without resume must move the old checkpoint aside."""
+    _monkeypatch_market_data(monkeypatch)
+    config = {
+        "ticker": "FAKE",
+        "strategies": ["tsmom"],
+        "quick": True,
+        "robust": False,
+        "result_dir": str(tmp_path),
+        "run_id": "rerun",
+    }
+    search_module.run_search(config=config)
+    with pytest.warns(RuntimeWarning, match="moved to"):
+        second = search_module.run_search(config=config)
+
+    assert second["n_results"] == 5
+    csv_rows = pd.read_csv(tmp_path / "rerun" / "all_results.csv")
+    assert len(csv_rows) == 5  # no duplicate rows carried over from the first run
+    backups = list((tmp_path / "rerun").glob("all_results.*.bak.csv"))
+    assert len(backups) == 1
 
 
 def test_cli_accepts_config_without_ticker(monkeypatch):
@@ -1194,6 +1264,21 @@ def test_perturb_params_int_float():
     assert 0 in values["regime_confirm"] and 2 in values["regime_confirm"]
     assert 1 in values["position_size"] and 3 in values["position_size"]
     assert 0.08 in values["vol_target"] or 0.12 in values["vol_target"]
+
+
+def test_perturb_params_stays_in_domain_for_nonnegative_ints():
+    """Zero-valued int params must not sprout negative (out-of-domain) neighbors."""
+    from momentum_lab.robustness import perturb_params
+
+    params = {"skip_recent": 0, "signal_smooth": 0, "lookback": 3}
+    neighbors = perturb_params(params, frac=0.2)
+
+    assert neighbors  # the upward direction is still explored
+    for nb in neighbors:
+        assert nb["skip_recent"] >= 0
+        assert nb["signal_smooth"] >= 0
+    assert any(nb["skip_recent"] == 1 for nb in neighbors)
+    assert any(nb["signal_smooth"] == 1 for nb in neighbors)
 
 
 def test_robustness_check_shape():

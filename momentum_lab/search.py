@@ -5,6 +5,7 @@ import heapq
 import json
 import subprocess
 import time
+import warnings
 from datetime import datetime, timezone
 from itertools import count
 from pathlib import Path
@@ -196,6 +197,52 @@ def _load_checkpoint(path):
                 metrics[metric_name] = float(value) if isinstance(value, (int, float, np.number)) else value
         results.append(result)
     return results
+
+
+# Checkpoint metrics are only comparable with a resumed run when the data and
+# the cost/evaluation model match.  Everything else (strategy subset, quick
+# mode, top_n, workers, robust) may differ freely between a run and its resume.
+_RESUME_COMPAT_FIELDS = (
+    "ticker",
+    "data_snapshot",
+    "cost_bps",
+    "slippage_bps",
+    "financing_rate",
+    "borrow_bps",
+    "annualization",
+    "risk_free_rate",
+)
+
+
+def _check_resume_compatibility(run_dir, metadata):
+    """Reject a resume whose checkpoint was produced under a different config.
+
+    The checkpoint CSV stores metrics computed with the previous run's data
+    snapshot and cost model; resuming with different values would silently
+    mix incomparable Sharpe/CAGR numbers in one ranking.  Must be called
+    BEFORE ``run_config.json`` is rewritten, while the previous run's file
+    is still on disk.
+    """
+    if not (run_dir / "all_results.csv").exists():
+        return
+    config_path = run_dir / "run_config.json"
+    if not config_path.exists():
+        warnings.warn(
+            f"Cannot verify resume compatibility: {config_path} is missing.",
+            RuntimeWarning,
+        )
+        return
+    try:
+        previous = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot read previous run config {config_path}: {exc}") from exc
+    mismatched = [f for f in _RESUME_COMPAT_FIELDS if previous.get(f) != metadata.get(f)]
+    if mismatched:
+        names = ", ".join(mismatched)
+        raise ValueError(
+            f"resume configuration mismatch on {names}: the checkpoint in {run_dir} was produced "
+            f"under a different configuration. Use a new run_id or restore the original settings."
+        )
 
 
 def _split_periods(index):
@@ -414,6 +461,8 @@ def run_search(
         "keep_all_results": keep_all_results,
         "resume": resume,
     }
+    if resume:
+        _check_resume_compatibility(run_dir, metadata)
     (run_dir / "run_config.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"  Data: {df.index[0].date()} ~ {df.index[-1].date()}, {n} bars")
     print(f"  Train: {periods['train'][0].date()} ~ {periods['train'][1].date()}")
@@ -440,6 +489,19 @@ def run_search(
     seq = count()
     t0 = time.time()
     all_csv = run_dir / "all_results.csv"
+    if not resume and all_csv.exists():
+        # A fresh run reusing an explicit run_id must not append to the old
+        # checkpoint: resume dedup keeps the FIRST row per key, so stale rows
+        # (possibly computed under a different config) would win over the new
+        # ones.  Move the old checkpoint aside instead of silently mixing.
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        backup = run_dir / f"all_results.{stamp}.bak.csv"
+        warnings.warn(
+            f"{all_csv} exists from a previous run; moved to {backup.name}. "
+            f"Pass resume=True to continue that run instead.",
+            RuntimeWarning,
+        )
+        all_csv.rename(backup)
 
     def _offer_top(result):
         sharpe = result.get("val_metrics", {}).get("sharpe", -99)

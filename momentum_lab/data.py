@@ -189,7 +189,11 @@ def compute_features(df, annualization=252.0):
     close = df["close"]
     high = df.get("high", close)
     low = df.get("low", close)
-    volume = df.get("volume", pd.Series(1, index=df.index))
+    # NaN volume (indices, sparse feeds) must be zero-filled here: left as
+    # NaN it poisons vol_ratio below, punching NaN holes that silently drop
+    # rows from ML training windows - or, for an all-NaN column, drop EVERY
+    # row and flatten all ML positions without any error being raised.
+    volume = df.get("volume", pd.Series(1, index=df.index)).fillna(0)
 
     feats = pd.DataFrame(index=df.index)
 
