@@ -4,6 +4,10 @@ __pycache__/
 *$py.class
 *.so
 *.egg-info/
+.coverage
+.pytest_cache/
+.ruff_cache/
+htmlcov/
 dist/
 build/
 .eggs/

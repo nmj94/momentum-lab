@@ -1,9 +1,11 @@
-"""robustness.py - Overfitting detection via parameter neighborhood perturbation.
+"""robustness.py - Local parameter-sensitivity analysis.
 
 Given the best (strategy, params) found by the search, we nudge every numeric
 parameter by +/- some fraction and re-evaluate the Validation Sharpe of each
 neighbor. If the optimum sits on a wide "plateau" the score holds up; if it is
-an isolated peak, neighbors collapse and the result is fragile.
+an isolated peak, neighbors collapse and the result is fragile.  This is not a
+multiple-testing correction and must not be interpreted as proof that a search
+result is free from backtest overfitting.
 """
 
 import numpy as np
@@ -106,8 +108,7 @@ def robustness_check(
         }
 
     vals = [
-        _val_sharpe(strategy, data, prices, periods, nb, cost_bps, backtest_kwargs, risk_free_rate)
-        for nb in neighbors
+        _val_sharpe(strategy, data, prices, periods, nb, cost_bps, backtest_kwargs, risk_free_rate) for nb in neighbors
     ]
     vals = np.array([v for v in vals if v > -99], dtype=float)
     n_valid = len(vals)
@@ -132,7 +133,7 @@ def robustness_check(
     pct_degrade = float((vals < base * 0.5).mean())
     pct_positive = float((vals > 0).mean())
 
-    # Grade: A = robust plateau, B = moderate, C = fragile, D = overfit peak.
+    # Grade local smoothness only: A = plateau, B = moderate, C/D = unstable.
     if base > 0 and stats["median"] >= 0.8 * base and pct_degrade < 0.15:
         grade = "A"
     elif base > 0 and stats["median"] >= 0.6 * base and pct_degrade < 0.35:
@@ -159,6 +160,6 @@ def robustness_check(
             if grade == "B"
             else "Fragile"
             if grade == "C"
-            else "Overfit / fragile"
+            else "Locally unstable"
         ),
     }

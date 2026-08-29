@@ -4,13 +4,13 @@ import argparse
 
 from . import __version__
 from .search import run_search
-from .strategies import list_strategies
+from .strategies import STRATEGY_REGISTRY, list_strategies
 
 
 def main():
     parser = argparse.ArgumentParser(
         prog="momentum-lab",
-        description="Find the optimal momentum strategy for any asset. Just provide a ticker.",
+        description="Compare momentum strategies with reproducible out-of-sample evaluation.",
         epilog="Examples:\n"
         "  momentum-lab GLD                    # Search gold ETF\n"
         "  momentum-lab SPY --quick            # Quick search S&P 500\n"
@@ -27,21 +27,33 @@ def main():
     parser.add_argument(
         "--config", type=str, default=None, help="JSON search config; its values take precedence over CLI defaults"
     )
-    parser.add_argument(
-        "--resume", action="store_true", help="Resume an existing --run-id from all_results.csv"
+    parser.add_argument("--resume", action="store_true", help="Resume an existing --run-id from all_results.csv")
+    search_mode = parser.add_mutually_exclusive_group()
+    search_mode.add_argument(
+        "--quick", dest="quick", action="store_true", default=True, help="Quick mode: 5 params per strategy (default)"
     )
-    parser.add_argument("--quick", action="store_true", help="Quick mode: 5 params per strategy")
-    parser.add_argument("--strategies", type=str, default=None, help="Comma-separated strategy names (default: all)")
+    search_mode.add_argument(
+        "--exhaustive", dest="quick", action="store_false", help="Run the full grid; can take days for ML strategies"
+    )
+    strategy_mode = parser.add_mutually_exclusive_group()
+    strategy_mode.add_argument(
+        "--strategies", type=str, default=None, help="Comma-separated strategy names (default: non-ML strategies)"
+    )
+    strategy_mode.add_argument(
+        "--all-strategies", action="store_true", help="Include experimental ML strategies as well"
+    )
     parser.add_argument("--workers", type=int, default=1, help="Parallel workers")
     parser.add_argument("--cost", type=float, default=1.0, help="Transaction cost in bps")
     parser.add_argument("--slippage", type=float, default=0.0, help="Additional slippage in bps")
     parser.add_argument("--financing-rate", type=float, default=0.0, help="Annual financing rate (decimal)")
     parser.add_argument("--borrow-bps", type=float, default=0.0, help="Annual short borrow fee in bps")
+    parser.add_argument("--cash-rate", type=float, default=0.0, help="Annual return earned by uninvested cash")
+    parser.add_argument("--max-leverage", type=float, default=2.0, help="Final absolute exposure cap")
     parser.add_argument(
-        "--annualization", type=float, default=252, help="Return periods per year (252 stocks, 365 crypto)"
+        "--annualization", type=float, default=None, help="Return periods per year (default: infer 252/365)"
     )
     parser.add_argument(
-        "--risk-free-rate", type=float, default=0.04, help="Annual risk-free rate as a decimal (default: 0.04)"
+        "--risk-free-rate", type=float, default=0.0, help="Annual risk-free rate as a decimal (default: 0)"
     )
     parser.add_argument("--start", type=str, default="2004-01-01", help="Data start date")
     parser.add_argument("--end", type=str, default=None, help="Data end date (default: today)")
@@ -52,21 +64,23 @@ def main():
     )
     parser.add_argument("--run-id", type=str, default=None, help="Custom run directory name (default: auto-generated)")
     parser.add_argument(
-        "--no-keep-all",
+        "--keep-all",
         dest="keep_all_results",
-        action="store_false",
-        help="Stream results to CSV without retaining them in memory (lower RAM on full grids)",
+        action="store_true",
+        default=False,
+        help="Retain every result in memory (default: stream to disk and keep top-N)",
     )
+    parser.add_argument("--no-keep-all", dest="keep_all_results", action="store_false", help=argparse.SUPPRESS)
     parser.add_argument(
         "--robust",
         dest="robust",
         action="store_true",
         default=True,
-        help="Run robustness check on best params (default: True)",
+        help="Run local parameter-sensitivity analysis on the selected params (default: True)",
     )
-    parser.add_argument("--no-robust", dest="robust", action="store_false", help="Skip robustness check")
+    parser.add_argument("--no-robust", dest="robust", action="store_false", help="Skip parameter-sensitivity analysis")
     parser.add_argument(
-        "--robust-frac", type=float, default=0.2, help="Perturbation fraction for robustness check (default: 0.2)"
+        "--robust-frac", type=float, default=0.2, help="Perturbation fraction for sensitivity analysis (default: 0.2)"
     )
     parser.add_argument("--list", action="store_true", help="List all strategies and exit")
     parser.add_argument("--version", action="version", version=f"momentum-lab {__version__}")
@@ -83,6 +97,8 @@ def main():
     strategies = None
     if args.strategies:
         strategies = [s.strip() for s in args.strategies.split(",")]
+    elif args.all_strategies:
+        strategies = list(STRATEGY_REGISTRY)
 
     run_search(
         ticker=args.ticker or "GLD",
@@ -91,6 +107,8 @@ def main():
         slippage_bps=args.slippage,
         financing_rate=args.financing_rate,
         borrow_bps=args.borrow_bps,
+        cash_rate=args.cash_rate,
+        max_leverage=args.max_leverage,
         annualization=args.annualization,
         risk_free_rate=args.risk_free_rate,
         workers=args.workers,

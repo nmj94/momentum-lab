@@ -1,256 +1,221 @@
 # Momentum Lab
 
-**只需提供一个股票代码，自动找到最优动量交易策略。**
+**可复现的动量策略研究与参数敏感性评估工具。**
 
 [English](README.md) | [中文](README_CN.md)
 
-Momentum Lab 自动测试 26 种策略、超过 135 万组参数组合，为你的标的找到表现最优的动量策略。包含经典动量指标、机器学习模型、以及根据市场状态自动切换子策略的自适应 Regime 策略。
+Momentum Lab 用于在明确的数据、成交、成本和风险假设下，对比经典动量规则、实验性机器学习模型和市场状态策略。
 
-## 快速开始
+本项目不再宣称能够找到普遍适用的“最优策略”。当大量参数被反复测试时，漂亮的历史结果可能来自选择偏差或过拟合。输出是研究证据，不是投资建议。
 
-```bash
-# 安装
-pip install -e .
+## 安全的快速开始
 
-# 搜索黄金 ETF 的最优策略
-momentum-lab GLD
+项目目前应从源码安装。PyPI 上的 `momentum-lab` 名称属于一个无关项目，请勿运行 `pip install momentum-lab`。
 
-# 快速搜索标普 500
-momentum-lab SPY --quick
-
-# 4 线程并行搜索比特币
-momentum-lab BTC-USD --workers 4
-
-# 只搜索指定策略
-momentum-lab AAPL --strategies tsmom,ma_cross,rsi,regime_aware
-```
-
-### 配置驱动与断点续跑（P1）
-
-把一次研究运行写成 JSON，可以在本地、CI 或后续任务中复现同一组参数：
-
-```bash
-momentum-lab --config examples/search_config.json
-momentum-lab --config examples/search_config.json --resume
-```
-
-`--resume` 会读取同一 `result_dir/run_id/all_results.csv` 中已经完成的组合，只运行缺失组合；因此需要在配置中固定 `run_id`。配置文件中的字段优先于命令行默认值，支持的字段与 `SearchConfig` 一致。也可以直接在 Python API 中传入 `SearchConfig`、字典或 JSON 路径：
-
-```python
-from momentum_lab import SearchConfig, run_search
-
-config = SearchConfig(ticker="GLD", strategies=["tsmom"], quick=True,
-                      robust=False, result_dir="experiments", run_id="gld-p1")
-result = run_search(config=config)
-resumed = run_search(config=config, resume=True)
-print(resumed["n_skipped"], "experiments loaded from checkpoint")
-```
-
-## 工作原理
-
-```
-输入一个代码（如 GLD）
-        |
-        v
-  从 Yahoo Finance 下载数据
-        |
-        v
-  划分 训练集 / 验证集 / 测试集
-        |
-        v
-  测试 26 种策略 × 数千组参数
- （经典动量、机器学习、自适应 Regime）
-        |
-        v
-  按验证集 Sharpe 排名
-        |
-        v
-  在测试集上评估最优策略
-        |
-        v
-  稳健性检验：扰动最优参数
-  （检测过拟合/孤立峰值）
-        |
-        v
-  输出：最优策略 + 参数 + 指标
-```
-
-## 包含的策略
-
-### 经典动量策略（15 种）
-| 策略 | 说明 | 关键参数 |
-|------|------|---------|
-| TSMOM | 时间序列动量 | lookback, threshold, skip_recent |
-| MA Cross | 均线交叉 | fast, slow, ma_type (SMA/EMA/WMA/DEMA) |
-| MACD | MACD 信号交叉 | fast, slow, signal, mode |
-| RSI | RSI 动量/反转 | period, 买卖阈值, 平滑 |
-| ROC | 变化率动量 | period, threshold, smoothing |
-| Bollinger | 布林带突破 | period, num_std, band_width_filter |
-| Donchian | 唐奇安通道突破 | period, exit_period, confirmation |
-| Dual Momentum | 绝对动量 | lookback, threshold, smoothing |
-| Triple MA | 三均线系统 | fast, medium, slow, ma_type |
-| Vol Scale | 动量 + 波动率缩放 | lookback, vol_target, vol_lookback |
-| Acceleration | 价格加速动量 | short_lb, long_lb, threshold |
-| Z-Score | Z 分数动量/回归 | lookback, entry_z, exit_z |
-| Heikin Ashi | HA K 线动量 | smooth, confirmation |
-| Supertrend | 超级趋势 | atr_period, multiplier |
-| Multi Breakout | 多周期突破投票 | periods, vote_threshold |
-
-### 机器学习策略（8 种）
-| 策略 | 说明 |
-|------|------|
-| ML LogReg | 逻辑回归（Walk-forward 训练） |
-| ML RF | 随机森林 |
-| ML XGB | XGBoost 梯度提升 |
-| ML KNN | K 近邻 |
-| ML SVM | 支持向量机 |
-| ML NB | 朴素贝叶斯 |
-| ML AdaBoost | AdaBoost 决策树桩 |
-| ML Extra Trees | 极端随机树 |
-
-### 自适应策略（3 种）
-| 策略 | 说明 |
-|------|------|
-| Ensemble | 多策略投票 |
-| Stacked | 策略 + 动量过滤叠加 |
-| **Regime Aware** | 自动检测市场状态（趋势/震荡/危机），动态切换子策略 |
-
-## Regime 自适应策略
-
-旗舰策略使用 4 个指标（ADX 趋势强度、波动率比率、均线排列、动量信号）检测市场状态，并自动切换：
-
-| 市场状态 | 策略行为 |
-|---------|---------|
-| 趋势 + 多头 | 全仓，波动率缩放仓位 |
-| 震荡 + 多头 | 全仓（捕捉非趋势上涨） |
-| 趋势 + 空头 | 空仓或做空（可选） |
-| 危机 | 降仓 + 极低波动率目标 |
-| 中性震荡 | 空仓 |
-
-另附快速止损机制：当 N 日收益跌破阈值时立即削减仓位。
-
-## Python API
-
-```python
-from momentum_lab import download_data, backtest, evaluate, get_strategy, run_search
-
-# 运行搜索
-results = run_search("GLD", quick=True)
-print(f"最优策略: {results['best']['strategy']}")
-print(f"最优参数: {results['best']['params']}")
-
-# 稳健性检验结果（过拟合检测）
-rob = results.get("robustness") or {}
-if rob.get("grade"):
-    print(f"等级: {rob['grade']} ({rob.get('verdict', 'n/a')})")
-    print(f"基线验证 Sharpe: {rob['baseline']:.4f}")
-    stats = rob.get("stats") or {}
-    if stats:
-        print(f"邻域中位数: {stats['median']:.4f}")
-
-# 单独测试某个策略
-from momentum_lab.data import prepare_data
-data, df = prepare_data("SPY")
-strategy = get_strategy("regime_aware")
-positions = strategy.run(data, adx_trend_threshold=15, mom_lookback=63,
-                          vol_target_normal=0.12, position_size=2.0)
-result = backtest(positions, df["close"])
-metrics = evaluate(result["returns"])
-print(f"Sharpe: {metrics['sharpe']}")
-```
-
-## 命令行参数
-
-```
-momentum-lab TICKER [选项]
-
-参数:
-  TICKER              Yahoo Finance 代码（GLD, SPY, BTC-USD, AAPL, ...）
-
-选项:
-  --quick             快速模式：每种策略只测 5 组参数
-  --config PATH       从 JSON 加载完整搜索配置（配置值优先）
-  --resume            从指定 run-id 的 all_results.csv 断点续跑
-  --strategies STR    指定策略名称（逗号分隔）
-  --workers N         并行进程数（默认 1）
-  --cost BPS          交易成本，基点（默认 1.0）
-  --slippage BPS      额外滑点，基点（默认 0）
-  --financing-rate R  年化融资利率（小数，默认 0）
-  --borrow-bps BPS    年化做空借券费，基点（默认 0）
-  --annualization N   年化周期数（股票 252，加密货币 365）
-  --risk-free-rate R  年化无风险利率，小数形式（默认 0.04）
-  --start DATE        数据开始日期（默认 2004-01-01）
-  --end DATE          数据结束日期（默认今天）
-  --refresh           忽略缓存，强制从 Yahoo 重新下载
-  --top N             保留前 N 个结果（默认 50）
-  --result-dir DIR    结果产物父目录（默认 ./experiments）
-  --run-id ID         自定义运行目录名（默认自动生成）
-  --no-keep-all       结果只流式写入 CSV，不在内存中保留全量
-                      （全量网格建议开启：否则内存占用 1 GB+）
-  --robust            对最优参数做稳健性检验（默认开启）
-  --no-robust         跳过稳健性检验
-  --robust-frac F     参数扰动比例（默认 0.2）
-  --list              列出所有策略并退出
-  --version           显示版本号
-```
-
-## 稳健性检验
-
-搜索可能会落在某个碰巧表现好的参数尖峰上，无法泛化。找到最优策略后，momentum-lab
-会把每个数值参数扰动 ±20%（整数 ±1）并重新评估每个邻域的验证集 Sharpe：
-
-- **等级 A（稳健）**：邻域结果接近最优 —— 参数高原宽阔
-- **等级 B**：相对稳定
-- **等级 C**：脆弱 —— 结果高度依赖精确参数
-- **等级 D / 孤立峰值**：最优点是尖峰，结果属于过拟合
-
-如果看到 *ISOLATED PEAK - likely overfit*（疑似孤立峰值/过拟合），请降低对实盘的预期，
-并考虑收窄参数搜索空间。
-
-## 安装
-
-### 从源码安装
 ```bash
 git clone https://github.com/nmj94/momentum-lab.git
 cd momentum-lab
 pip install -e .
+
+# 默认：18 个非 ML 策略各取 5 个代表性参数，并将结果流式写入磁盘
+momentum-lab GLD
+
+# 指定策略
+momentum-lab SPY --strategies tsmom,ma_cross,rsi,regime_aware
+
+# 非 ML 完整网格：159,668 次实验，必须显式启用
+momentum-lab GLD --exhaustive --workers 4
 ```
 
-> **macOS 提示：** 可选的 XGBoost 策略需要 `libomp`（`brew install libomp`）。
-> 缺少它时 `ml_xgb` 实验会优雅失败，其余策略不受影响。
+机器学习策略目前属于实验功能，不再默认安装或运行：
 
-### 环境要求
-- Python 3.10+
-- 可访问 Yahoo Finance 的网络（支持股票、ETF、加密货币、指数）
+```bash
+# scikit-learn 策略
+pip install -e ".[ml]"
+momentum-lab SPY --strategies ml_logreg,ml_rf
 
-## 输出结果
+# XGBoost 策略
+pip install -e ".[xgb]"
+momentum-lab SPY --strategies ml_xgb
 
-运行后，结果保存在 `experiments/<run_id>/` 目录，每次运行独立保存：
-- `run_config.json` - 数据区间、成本模型、参数、切分配置、Git SHA 和数据快照哈希
-- `all_results.csv` - 所有实验结果（含训练/验证/测试指标），也是断点续跑检查点
-- `top_results.csv` - 按验证集 Sharpe 排序的前 N 个策略
-- `robustness.csv` - 最优策略的稳健性检验汇总
-- 控制台输出最优策略的参数和测试集表现
+# 全部 26 个策略；完整 ML 网格可能运行数日
+momentum-lab SPY --all-strategies
+momentum-lab SPY --all-strategies --exhaustive --workers 8
+```
 
-## 示例结果（黄金 GLD）
+未来发布使用的 distribution name 为 `momentum-research-lab`；Python import 和命令行名称仍为 `momentum_lab` 与 `momentum-lab`。
 
-由全部 18 个非 ML 策略的穷举搜索产生（952,824 个实验，数据区间
-2004-11-18 ~ 2026-08-14）。买入持有基准与策略收取相同的一次性建仓成本：
+## v0.5 主要修复
 
-| 策略 | 验证集 Sharpe | 测试集 Sharpe | 测试集年化 | 测试集最大回撤 |
-|------|-------------|-------------|-----------|-------------|
-| TSMOM（验证集最优） | 1.29 | 0.27 | 7.9% | -38.3% |
-| Acceleration | 1.28 | -0.07 | 0.8% | -32.1% |
-| RSI | 1.23 | 0.48 | 13.8% | -35.8% |
-| 买入持有 | - | 0.86 | 20.4% | -26.4% |
+- 默认改为快速、非 ML、流式结果，避免一次命令触发数日计算和 1GB 以上内存占用。
+- 风险仓位不再作为 alpha 参数参与搜索，避免 Sharpe 机械偏好更大杠杆。
+- 所有策略在回测出口统一执行最终杠杆上限，内部缩放不能再把 2 倍上限放大为 4 倍。
+- 闲置现金可以获得显式现金收益；融资成本只对超过 1 倍的敞口收取。
+- 加密资产默认按 365 年化，其他日频资产默认按 252 年化，也可手动覆盖。
+- 对用户承诺的结束日期真正包含当天；内部自动处理 yfinance 的排他性 `end`。
+- Yahoo 下载增加有限次数的指数退避重试。
+- 数据缓存迁移到操作系统用户缓存目录，并采用原子写入。
+- 断点文件使用固定字段；数据、策略、搜索模式、包版本、schema、Git SHA、成本或风险设置不同均拒绝混合续跑。
+- scikit-learn 和 XGBoost 改为可选依赖。
+- 原“稳健性等级”明确改称局部参数敏感性；它不能替代多重检验校正。
 
-验证集最优（TSMOM）的稳健性等级为 B（邻域稳定、非孤峰），但在测试窗口
-跑输买入持有——该窗口金价单边大牛市，只做多过滤策略反而落后。这种量级的
-验证->测试衰减属正常现象，也正是本工具单独报告未触碰测试集的原因。
+## 研究流程
 
-## 免责声明
+```text
+股票代码 + 版本化运行配置
+        -> 复权日频 OHLCV 数据
+        -> 互不重叠的训练 / 验证 / 测试区间
+        -> 策略与参数评估
+        -> 按验证集 Sharpe 排名
+        -> 对选定结果报告一次测试集表现
+        -> 局部参数敏感性分析
+        -> 断点、摘要、基准和运行清单
+```
 
-本工具仅供研究使用，不构成投资建议。历史回测不代表未来收益。交易前请自行研究并考虑交易成本、滑点和税费。
+当前 train/validation/test 流程只是研究基线，并非最终方法。正式 1.0 版本之前，路线图将加入嵌套 walk-forward、Deflated Sharpe Ratio 和 Probability of Backtest Overfitting。
+
+## 策略范围
+
+### 经典动量策略（15）
+
+| 策略 | 说明 |
+|---|---|
+| TSMOM | 时间序列动量 |
+| MA Cross | SMA/EMA/WMA/DEMA 均线交叉 |
+| MACD | 交叉、柱体变化和零轴过滤 |
+| RSI | 动量与反转模式 |
+| ROC | 变化率动量 |
+| Bollinger | 突破与均值回归 |
+| Donchian | 带退出通道的持续突破持仓 |
+| Dual Momentum | 单资产绝对动量 |
+| Triple MA | 三均线排列 |
+| Vol Scale | 动量加波动率缩放 |
+| Acceleration | 长短周期收益加速度 |
+| Z-Score | 有状态的动量/回归规则 |
+| Heikin Ashi | 平滑 K 线方向 |
+| Supertrend | 基于 ATR 的趋势规则 |
+| Multi Breakout | 多周期突破投票 |
+
+### 实验性 ML 策略（8）
+
+逻辑回归、随机森林、XGBoost、KNN、SVM、Gaussian Naive Bayes、AdaBoost 和 Extra Trees。Walk-forward 训练会 purge 与预测边界重叠的标签；网格初始训练窗口不低于 252 个样本；KNN 中样本不足的组合会在运行前剔除。
+
+### 组合与市场状态策略（3）
+
+Ensemble、Stacked 和 Regime Aware。
+
+v0.5 完整空间为 291,188 个组合，其中非 ML 159,668 个、ML 131,520 个。组合数量不是研究质量指标。
+
+## Python API
+
+```python
+from momentum_lab import SearchConfig, run_search
+
+config = SearchConfig(
+    ticker="GLD",
+    strategies=["tsmom", "ma_cross", "regime_aware"],
+    quick=True,
+    risk_free_rate=0.0,
+    cash_rate=0.0,
+    financing_rate=0.05,
+    max_leverage=1.5,
+    result_dir="experiments",
+    run_id="gld-research-v1",
+    keep_all_results=False,
+)
+
+result = run_search(config=config)
+print(result["best"])
+print(result["benchmark_metrics"])
+print(result["parameter_sensitivity"])
+
+# 只有源码、数据、策略集合、搜索模式与成本模型完全一致才允许续跑
+resumed = run_search(config=config, resume=True)
+print(resumed["n_skipped"], resumed["n_errors"])
+```
+
+单策略接口仍然可用：
+
+```python
+from momentum_lab import backtest, evaluate, get_strategy, prepare_data
+
+data, frame = prepare_data("BTC-USD")  # 自动使用 365 年化
+positions = get_strategy("tsmom").run(data, lookback=63, threshold=0.01, long_short=False)
+simulation = backtest(
+    positions,
+    frame["close"],
+    cost_bps=2,
+    slippage_bps=3,
+    cash_rate=0.03,
+    financing_rate=0.06,
+    max_leverage=1.0,
+    annualization=365,
+)
+print(evaluate(simulation["returns"], risk_free_rate=0.03, annualization=365))
+```
+
+## 命令行参数
+
+```text
+momentum-lab TICKER [选项]
+
+  --quick                 每个策略取 5 个代表性组合（默认）
+  --exhaustive            完整参数网格，必须显式启用
+  --strategies NAMES      逗号分隔策略名（默认仅非 ML）
+  --all-strategies        加入实验性 ML 策略
+  --config PATH           加载完整 SearchConfig JSON
+  --resume                对完全一致的 run-id 续跑
+  --workers N             并行进程数（默认 1）
+  --cost BPS              线性交易成本（默认 1）
+  --slippage BPS          额外线性滑点（默认 0）
+  --cash-rate RATE        年化现金收益（默认 0）
+  --financing-rate RATE   超过 1 倍敞口的融资利率（默认 0）
+  --borrow-bps BPS        年化做空借券费（默认 0）
+  --max-leverage X        最终绝对敞口上限（默认 2）
+  --annualization N       覆盖自动推导的 252/365
+  --risk-free-rate RATE   评价指标门槛利率（默认 0）
+  --start DATE            开始日期（默认 2004-01-01）
+  --end DATE              包含在结果中的结束日期
+  --refresh               忽略市场数据缓存
+  --top N                 Top 结果数量（默认 50）
+  --result-dir DIR        运行产物父目录
+  --run-id ID             稳定运行目录名
+  --keep-all              在内存保留全部结果（默认流式写盘）
+  --robust / --no-robust  开关局部参数敏感性分析
+  --robust-frac F         局部扰动比例（默认 0.2）
+  --list                  列出策略和完整网格数量
+  --version               显示版本
+```
+
+## 输出文件
+
+每次运行保存在 `experiments/<run_id>/`：
+
+- `run_config.json`：包/schema/Git 版本、源码与数据哈希、区间、策略、成本和风险假设。
+- `all_results.csv`：固定字段、增量写入的断点文件。
+- `top_results.csv`：按验证集 Sharpe 排名的 Top 结果。
+- `robustness.csv`：启用时输出局部参数敏感性摘要。
+- `summary.json`：选定结果、买入持有基准、敏感性结果、实验数、错误数和续跑统计。
+
+## 当前方法局限
+
+- 当前仍然在单一验证窗口上从较大策略族中选择结果。
+- 局部参数敏感性不能校正多重检验和选择偏差。
+- 收盘价信号对应下一段 close-to-close 收益，尚未提供精确的 MOC/次日开盘成交模型。
+- 线性成本模型尚未覆盖买卖价差、市场冲击、容量、停牌、借券可得性和税费。
+- yfinance 适合个人研究，不能直接作为商业数据再分发层。
+
+在独立验证、现实成交假设和 forward/paper testing 完成前，不应将结果直接用于真实资金配置。
+
+## 开发与测试
+
+```bash
+uv sync --all-extras
+uv run ruff check .
+uv run pytest -m "not network" -q
+```
+
+当前 CI 覆盖 Python 3.10—3.13，并在全新环境构建、安装 wheel，同时执行覆盖率门槛。定时联网测试和自动发布仍在路线图中。
 
 ## 许可证
 
