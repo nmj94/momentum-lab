@@ -1,5 +1,6 @@
 """data.py - Download market data for any ticker."""
 
+import json
 import os
 import re
 import time
@@ -16,6 +17,7 @@ from platformdirs import user_cache_dir
 DATA_DIR = Path(os.environ.get("MOMENTUM_LAB_DATA_DIR", user_cache_dir("momentum-lab")))
 DOWNLOAD_ATTEMPTS = 3
 DOWNLOAD_BACKOFF_SECONDS = 0.5
+CACHE_SCHEMA_VERSION = 1
 
 # Yahoo tickers are alphanumeric plus a small symbol set (BRK-B, RDS.A,
 # ^GSPC, EURUSD=X).  Anything else (notably URL-significant characters such
@@ -23,6 +25,10 @@ DOWNLOAD_BACKOFF_SECONDS = 0.5
 # URL built by yfinance.
 _TICKER_RE = re.compile(r"^[A-Za-z0-9._^=-]+$")
 _CONTINUOUS_QUOTES = ("-USD", "-EUR", "-GBP", "-JPY", "-AUD", "-CAD", "-CHF", "-BTC", "-ETH")
+
+
+class MarketDataUnavailableError(RuntimeError):
+    """The remote provider could not supply data after bounded retries."""
 
 
 def is_continuously_traded(ticker: str) -> bool:
@@ -78,7 +84,7 @@ def _range_boundaries(start, end, continuous=False):
     return start_boundary, end_boundary
 
 
-def _cache_covers_range(df, start, end, continuous=False):
+def _cache_covers_range(df, start, end, continuous=False, earliest_available=None):
     """Return whether a cached frame fully covers the requested date range."""
     if df is None or df.empty:
         return False
@@ -87,8 +93,38 @@ def _cache_covers_range(df, start, end, continuous=False):
     # by pandas' generic business-day offset, but never accept a truncated end.
     tolerance = pd.Timedelta(days=7)
     if df.index.min() > start_boundary + tolerance:
-        return False
+        # A sidecar written after a successful provider response records that
+        # the symbol genuinely starts later than the requested history.  This
+        # lets late-listed assets reuse their cache without relaxing coverage
+        # checks for legacy or accidentally truncated files.
+        if earliest_available is None:
+            return False
+        earliest = pd.Timestamp(earliest_available)
+        if start_boundary >= earliest or abs(df.index.min() - earliest) > tolerance:
+            return False
     return df.index.max() >= end_boundary
+
+
+def _metadata_path(cache_path):
+    return cache_path.with_suffix(".meta.json")
+
+
+def _load_cache_metadata(cache_path, ticker):
+    path = _metadata_path(cache_path)
+    if not path.exists():
+        return {}
+    try:
+        metadata = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError) as exc:
+        warnings.warn(f"Ignoring unreadable cache metadata {path}: {exc}", RuntimeWarning)
+        return {}
+    if (
+        not isinstance(metadata, dict)
+        or metadata.get("schema_version") != CACHE_SCHEMA_VERSION
+        or metadata.get("ticker") != ticker
+    ):
+        return {}
+    return metadata
 
 
 def _write_cache_atomic(df, cache_path):
@@ -99,6 +135,35 @@ def _write_cache_atomic(df, cache_path):
         tmp_path.replace(cache_path)
     finally:
         tmp_path.unlink(missing_ok=True)
+
+
+def _write_cache_metadata_atomic(metadata, cache_path):
+    path = _metadata_path(cache_path)
+    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp_path.replace(path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+def _validate_ohlcv(df, ticker):
+    """Enforce the provider contract before data reaches any strategy."""
+    required = {"open", "high", "low", "close"}
+    missing = sorted(required - set(df.columns))
+    if missing:
+        raise ValueError(f"Download for '{ticker}' is missing required OHLC column(s): {', '.join(missing)}")
+    if not isinstance(df.index, pd.DatetimeIndex):
+        raise TypeError(f"Download for '{ticker}' does not have a DatetimeIndex.")
+    if not df.index.is_monotonic_increasing or not df.index.is_unique:
+        raise ValueError(f"Download for '{ticker}' has an unsorted or duplicate date index.")
+    prices = df[["open", "high", "low", "close"]].to_numpy(dtype=float)
+    if not np.isfinite(prices).all() or (prices <= 0).any():
+        raise ValueError(f"Download for '{ticker}' contains non-finite or non-positive OHLC prices.")
+    if (df["high"] < df[["open", "low", "close"]].max(axis=1)).any() or (
+        df["low"] > df[["open", "high", "close"]].min(axis=1)
+    ).any():
+        raise ValueError(f"Download for '{ticker}' contains inconsistent high/low prices.")
 
 
 def download_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True):
@@ -114,8 +179,9 @@ def download_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True):
         pd.DataFrame with columns: open, high, low, close, volume.
 
     Raises:
-        ValueError: If the ticker is invalid, the download fails and no
-            cached copy exists, or the download contains no usable rows.
+        ValueError: If the ticker/range is invalid or data violates the OHLC contract.
+        MarketDataUnavailableError: If the provider fails after bounded retries
+            and no range-complete cache exists.
     """
     start_ts = pd.Timestamp(start)
     end_ts = pd.Timestamp(end) if end is not None else None
@@ -132,7 +198,21 @@ def download_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True):
     cache_path = DATA_DIR / f"{safe_ticker}_daily.csv"
 
     cached = _load_cache(cache_path) if use_cache and cache_path.exists() else None
-    if cached is not None and _cache_covers_range(cached, start, end, continuous=continuous):
+    if cached is not None:
+        try:
+            _validate_ohlcv(cached, ticker)
+        except (TypeError, ValueError) as exc:
+            warnings.warn(f"Ignoring invalid cache file {cache_path}: {exc}", RuntimeWarning)
+            cached = None
+    cache_metadata = _load_cache_metadata(cache_path, ticker) if cached is not None else {}
+    earliest_available = cache_metadata.get("earliest_available")
+    if cached is not None and _cache_covers_range(
+        cached,
+        start,
+        end,
+        continuous=continuous,
+        earliest_available=earliest_available,
+    ):
         return _slice_range(cached, start, end)
     # A partial cache must not be returned silently.  Refresh the requested
     # window and merge it with the existing cache after a successful download.
@@ -155,16 +235,20 @@ def download_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True):
 
     if df is None and last_error is not None:
         # Temporary failure (e.g. Yahoo rate limit). Fall back to cached data.
-        if cached is not None and _cache_covers_range(cached, start, end, continuous=continuous):
+        if cached is not None and _cache_covers_range(
+            cached, start, end, continuous=continuous, earliest_available=earliest_available
+        ):
             warnings.warn(f"Download failed ({last_error}); falling back to cached data.", RuntimeWarning)
             return _slice_range(cached, start, end)
-        raise last_error
+        raise MarketDataUnavailableError(f"Market-data provider failed for '{ticker}': {last_error}") from last_error
 
     if df is None or df.empty:
-        if cached is not None and _cache_covers_range(cached, start, end, continuous=continuous):
+        if cached is not None and _cache_covers_range(
+            cached, start, end, continuous=continuous, earliest_available=earliest_available
+        ):
             warnings.warn("Download returned no data; falling back to cached data.", RuntimeWarning)
             return _slice_range(cached, start, end)
-        raise ValueError(
+        raise MarketDataUnavailableError(
             f"Download failed for '{ticker}'. "
             f"Possible causes: invalid ticker, delisted, or network error. "
             f"Try searching at https://finance.yahoo.com/lookup"
@@ -177,6 +261,8 @@ def download_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True):
     keep = [c for c in ["open", "high", "low", "close", "volume"] if c in df.columns]
     df = df[keep].copy()
     df.index = pd.to_datetime(df.index)
+    df = df.sort_index()
+    df = df[~df.index.duplicated(keep="last")]
     # Only price columns are mandatory: volume is NaN for some indices and
     # must not punch holes in the price series.  A frame left empty after
     # dropping price NaNs is a hard failure, never a silent empty result
@@ -192,6 +278,8 @@ def download_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True):
         df = pd.concat([cached, df]).sort_index()
         df = df[~df.index.duplicated(keep="last")]
 
+    _validate_ohlcv(df, ticker)
+
     # The provider may return a narrower range than requested (for example
     # for a newly listed or delisted symbol).  A truncated END is always a
     # hard error: silently serving stale history would poison the research
@@ -203,7 +291,8 @@ def download_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True):
     start_boundary, end_boundary = _range_boundaries(start, end, continuous=continuous)
     if df.index.max() < end_boundary:
         raise ValueError(f"Downloaded data for '{ticker}' does not cover the requested range.")
-    if df.index.min() > start_boundary + pd.Timedelta(days=7):
+    late_start = df.index.min() > start_boundary + pd.Timedelta(days=7)
+    if late_start:
         warnings.warn(
             f"Data for '{ticker}' starts at {df.index.min().date()}, later than the requested "
             f"start {pd.Timestamp(start).date()}; treating it as the earliest available history.",
@@ -211,7 +300,22 @@ def download_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True):
         )
 
     if use_cache:
+        confirmed_earliest = None
+        if late_start:
+            confirmed_earliest = str(df.index.min())
+        elif earliest_available is not None and pd.Timestamp(earliest_available) == df.index.min():
+            confirmed_earliest = str(pd.Timestamp(earliest_available))
         _write_cache_atomic(df, cache_path)
+        _write_cache_metadata_atomic(
+            {
+                "schema_version": CACHE_SCHEMA_VERSION,
+                "ticker": ticker,
+                "earliest_available": confirmed_earliest,
+                "requested_start": str(start_ts),
+                "latest_available": str(df.index.max()),
+            },
+            cache_path,
+        )
 
     return _slice_range(df, start, end)
 

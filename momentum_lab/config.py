@@ -23,9 +23,16 @@ class SearchConfig:
     financing_rate: float = 0.0
     borrow_bps: float = 0.0
     cash_rate: float = 0.0
+    short_rebate_rate: float = 0.0
     max_leverage: float = 2.0
+    execution_model: str = "next_close"
+    execution_lag: int = 1
     annualization: float | None = None
     risk_free_rate: float = 0.0
+    validation_folds: int = 4
+    min_validation_bars: int = 60
+    min_validation_trades: int = 1
+    min_validation_exposure: float = 0.01
     workers: int = 1
     quick: bool = True
     top_n: int = 50

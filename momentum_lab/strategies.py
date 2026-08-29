@@ -594,8 +594,11 @@ class _MLBase(BaseStrategy):
         label = pd.Series(np.nan, index=close.index, dtype=float)
         known = fwd_ret.notna()
         label.loc[known] = (fwd_ret.loc[known] > 0).astype(float)
+        # Feature availability and label availability are different concepts.
+        # Unknown forward labels at the live tail must exclude rows from
+        # training without also destroying otherwise valid prediction inputs.
         feats = feats.copy()
-        feats[label.isna() | feats.isna().any(axis=1)] = np.nan
+        feats[feats.isna().any(axis=1)] = np.nan
         return feats, label
 
     def _walk_forward(self, feats, label, model_fn, train_size=504, step=21, retrain=True, forward=1, embargo=0):
@@ -612,35 +615,36 @@ class _MLBase(BaseStrategy):
             raise ValueError("forward must be >= 1 and embargo must be >= 0")
 
         original_index = feats.index
-        valid = ~(feats.isna().any(axis=1) | label.isna())
-        original_positions = np.flatnonzero(valid.to_numpy())
-        feats = feats[valid]
-        label = label[valid]
+        feature_valid = ~feats.isna().any(axis=1)
+        label_valid = feature_valid & label.notna()
+        prediction_positions = np.flatnonzero(feature_valid.to_numpy())
         preds = pd.Series(np.nan, index=original_index)
-        n = len(feats)
+        n = len(prediction_positions)
         i = train_size
         while i < n:
             # Use original bar offsets rather than compressed valid-row
             # offsets so intermittent feature gaps cannot weaken the purge.
-            prediction_bar = original_positions[i]
-            train_mask = original_positions[:i] + forward + embargo <= prediction_bar
+            prediction_bar = prediction_positions[i]
+            all_bars = np.arange(len(feats))
+            train_mask = label_valid.to_numpy() & (all_bars + forward + embargo <= prediction_bar)
             if train_mask.sum() < 2:
                 i += step
                 continue
-            train_labels = label.iloc[:i].to_numpy()[train_mask]
+            train_labels = label.to_numpy()[train_mask]
             if np.unique(train_labels).size < 2:
                 i += step
                 continue
             scaler = StandardScaler()
-            X = scaler.fit_transform(feats.iloc[:i].values[train_mask])
+            X = scaler.fit_transform(feats.to_numpy()[train_mask])
             model = model_fn()
             model.fit(X, train_labels)
             pe = min(i + step, n)
-            preds.iloc[original_positions[i:pe]] = model.predict(scaler.transform(feats.iloc[i:pe].values))
+            block_positions = prediction_positions[i:pe]
+            preds.iloc[block_positions] = model.predict(scaler.transform(feats.iloc[block_positions].values))
             if not retrain:
-                rest = feats.iloc[pe:]
-                if len(rest) > 0:
-                    preds.iloc[original_positions[pe:]] = model.predict(scaler.transform(rest.values))
+                rest_positions = prediction_positions[pe:]
+                if len(rest_positions) > 0:
+                    preds.iloc[rest_positions] = model.predict(scaler.transform(feats.iloc[rest_positions].values))
                 break
             i = pe
         return preds

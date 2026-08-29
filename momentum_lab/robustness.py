@@ -57,14 +57,17 @@ def _val_sharpe(
         positions = strategy.run(data, **params)
     except Exception:
         return -99.0
-    pp = positions.loc[periods["val"][0] : periods["val"][1]]
-    pr = prices.loc[periods["val"][0] : periods["val"][1]]
-    if len(pp) == 0 or pp.abs().sum() == 0:
-        return -99.0
     try:
         kwargs = dict(backtest_kwargs or {})
+        full = backtest(positions, prices, cost_bps=cost_bps, **kwargs)
+        val_returns = full["returns"].loc[periods["val"][0] : periods["val"][1]]
+        lag = int(kwargs.get("execution_lag", 0))
+        held = positions.reindex(prices.index).ffill().fillna(0.0).shift(lag + 1).fillna(0.0)
+        val_held = held.loc[periods["val"][0] : periods["val"][1]]
+        if len(val_returns) == 0 or val_held.abs().sum() == 0:
+            return -99.0
         return evaluate(
-            backtest(pp, pr, cost_bps=cost_bps, **kwargs)["returns"],
+            val_returns,
             risk_free_rate=risk_free_rate,
             annualization=kwargs.get("annualization", 252),
         )["sharpe"]

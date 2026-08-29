@@ -17,7 +17,7 @@ git clone https://github.com/nmj94/momentum-lab.git
 cd momentum-lab
 pip install -e .
 
-# 默认：18 个非 ML 策略各取 5 个代表性参数，并将结果流式写入磁盘
+# 默认：非 ML 策略各取 5 个确定性的拉丁超立方样本，并将结果流式写入磁盘
 momentum-lab GLD
 
 # 指定策略
@@ -45,34 +45,31 @@ momentum-lab SPY --all-strategies --exhaustive --workers 8
 
 未来发布使用的 distribution name 为 `momentum-research-lab`；Python import 和命令行名称仍为 `momentum_lab` 与 `momentum-lab`。
 
-## v0.5 主要修复
+## v0.6 主要修复
 
-- 默认改为快速、非 ML、流式结果，避免一次命令触发数日计算和 1GB 以上内存占用。
-- 风险仓位不再作为 alpha 参数参与搜索，避免 Sharpe 机械偏好更大杠杆。
-- 所有策略在回测出口统一执行最终杠杆上限，内部缩放不能再把 2 倍上限放大为 4 倍。
-- 闲置现金可以获得显式现金收益；融资成本只对超过 1 倍的敞口收取。
-- 加密资产默认按 365 年化，其他日频资产默认按 252 年化，也可手动覆盖。
-- 对用户承诺的结束日期真正包含当天；内部自动处理 yfinance 的排他性 `end`。
-- Yahoo 下载增加有限次数的指数退避重试。
-- 数据缓存迁移到操作系统用户缓存目录，并采用原子写入。
-- 断点文件使用固定字段；数据、策略、搜索模式、包版本、schema、Git SHA、成本或风险设置不同均拒绝混合续跑。
-- scikit-learn 和 XGBoost 改为可选依赖。
-- 原“稳健性等级”明确改称局部参数敏感性；它不能替代多重检验校正。
+- 搜索进程只获得训练和验证边界；全部候选与 Top 文件不再包含测试指标，完成选型后才对复制出的最终候选评估一次测试期。
+- 选型加入最小样本、交易次数和敞口约束，并使用 Deflated Sharpe 概率；同时输出时间折、95% Sharpe 区间、扩展式 walk-forward 选型回放及 CSCV/PBO 估计。
+- 账户破产后净值固定为零，不可能因后续杠杆收益“复活”。
+- 默认采用次日收盘成交，并显式支持同收盘、次日开盘和延迟收盘模型。
+- 融资与借券费用按真实日历天数计提；目标权重漂移产生再平衡换手；做空现金、抵押品返息和借券费分别核算。
+- SQLite 成为事务性续跑日志；CSV/JSON 原子导出；运行清单记录 lockfile 及完整运行环境。
+- ML 可以预测未来标签未知的尾部数据；已确认晚上市的资产可以正常复用缓存。
+- 快速模式改用固定种子的拉丁超立方抽样；不同平滑参数可复用昂贵的基础信号。
 
 ## 研究流程
 
 ```text
 股票代码 + 版本化运行配置
         -> 复权日频 OHLCV 数据
-        -> 互不重叠的训练 / 验证 / 测试区间
-        -> 策略与参数评估
-        -> 按验证集 Sharpe 排名
-        -> 对选定结果报告一次测试集表现
+        -> 40% 训练 / 40% 时间折验证 / 20% 封存测试
+        -> 候选评估阶段无法获得测试边界
+        -> 约束后的 Deflated Sharpe 选型及 walk-forward/PBO 诊断
+        -> 仅对复制出的最终候选报告一次测试期表现
         -> 局部参数敏感性分析
         -> 断点、摘要、基准和运行清单
 ```
 
-当前 train/validation/test 流程只是研究基线，并非最终方法。正式 1.0 版本之前，路线图将加入嵌套 walk-forward、Deflated Sharpe Ratio 和 Probability of Backtest Overfitting。
+这些措施只能降低、不能消除数据挖掘风险。独立数据验证和前向模拟仍是 1.0 的发布门槛。
 
 ## 策略范围
 
@@ -104,7 +101,7 @@ momentum-lab SPY --all-strategies --exhaustive --workers 8
 
 Ensemble、Stacked 和 Regime Aware。
 
-v0.5 完整空间为 291,188 个组合，其中非 ML 159,668 个、ML 131,520 个。组合数量不是研究质量指标。
+v0.6 完整空间为 291,188 个组合，其中非 ML 159,668 个、ML 131,520 个。组合数量不是研究质量指标。
 
 ## Python API
 
@@ -119,6 +116,9 @@ config = SearchConfig(
     cash_rate=0.0,
     financing_rate=0.05,
     max_leverage=1.5,
+    execution_model="next_close",
+    validation_folds=4,
+    min_validation_trades=2,
     result_dir="experiments",
     run_id="gld-research-v1",
     keep_all_results=False,
@@ -129,7 +129,7 @@ print(result["best"])
 print(result["benchmark_metrics"])
 print(result["parameter_sensitivity"])
 
-# 只有源码、数据、策略集合、搜索模式与成本模型完全一致才允许续跑
+# 只有源码树、运行环境、数据、策略空间与会计模型完全一致才允许续跑；Git SHA 仅作记录
 resumed = run_search(config=config, resume=True)
 print(resumed["n_skipped"], resumed["n_errors"])
 ```
@@ -148,7 +148,9 @@ simulation = backtest(
     slippage_bps=3,
     cash_rate=0.03,
     financing_rate=0.06,
+    short_rebate_rate=0.01,
     max_leverage=1.0,
+    execution_lag=1,
     annualization=365,
 )
 print(evaluate(simulation["returns"], risk_free_rate=0.03, annualization=365))
@@ -171,9 +173,16 @@ momentum-lab TICKER [选项]
   --cash-rate RATE        年化现金收益（默认 0）
   --financing-rate RATE   超过 1 倍敞口的融资利率（默认 0）
   --borrow-bps BPS        年化做空借券费（默认 0）
+  --short-rebate-rate R   年化做空抵押品返息（默认 0）
   --max-leverage X        最终绝对敞口上限（默认 2）
+  --execution-model M     same_close、next_close、next_open、delayed_close
+  --execution-lag N       仅供 delayed_close 使用的延迟 bar 数
   --annualization N       覆盖自动推导的 252/365
   --risk-free-rate RATE   评价指标门槛利率（默认 0）
+  --validation-folds N    偶数个时间验证折（默认 4）
+  --min-val-bars N        最少验证样本（默认 60）
+  --min-val-trades N      最少验证交易（默认 1）
+  --min-val-exposure X    最低平均绝对敞口（默认 0.01）
   --start DATE            开始日期（默认 2004-01-01）
   --end DATE              包含在结果中的结束日期
   --refresh               忽略市场数据缓存
@@ -191,17 +200,18 @@ momentum-lab TICKER [选项]
 
 每次运行保存在 `experiments/<run_id>/`：
 
-- `run_config.json`：包/schema/Git 版本、源码与数据哈希、区间、策略、成本和风险假设。
-- `all_results.csv`：固定字段、增量写入的断点文件。
-- `top_results.csv`：按验证集 Sharpe 排名的 Top 结果。
+- `run_config.json`：包/schema/Git 信息、源码/数据/lockfile/环境哈希、区间、策略、成本和风险假设。
+- `results.sqlite3`：事务性的正式断点与续跑日志。
+- `all_results.csv`：原子导出的可读结果，仅含训练/验证指标。
+- `top_results.csv`：按验证证据排序的候选，不含测试指标。
 - `robustness.csv`：启用时输出局部参数敏感性摘要。
 - `summary.json`：选定结果、买入持有基准、敏感性结果、实验数、错误数和续跑统计。
 
 ## 当前方法局限
 
-- 当前仍然在单一验证窗口上从较大策略族中选择结果。
-- 局部参数敏感性不能校正多重检验和选择偏差。
-- 收盘价信号对应下一段 close-to-close 收益，尚未提供精确的 MOC/次日开盘成交模型。
+- Deflated Sharpe 使用偏保守的独立试验近似；基于时间折的 CSCV/PBO 只能作为诊断，不能证明没有过拟合。
+- 如果不断新建 run-id 并反复观察最终测试报告，人为层面仍会形成测试集泄漏；代码不能替代研究预注册制度。
+- 局部参数敏感性仍是描述性指标，本身不能校正多重检验。
 - 线性成本模型尚未覆盖买卖价差、市场冲击、容量、停牌、借券可得性和税费。
 - yfinance 适合个人研究，不能直接作为商业数据再分发层。
 
@@ -215,7 +225,7 @@ uv run ruff check .
 uv run pytest -m "not network" -q
 ```
 
-当前 CI 覆盖 Python 3.10—3.13，并在全新环境构建、安装 wheel，同时执行覆盖率门槛。定时联网测试和自动发布仍在路线图中。
+当前 CI 覆盖 Python 3.10—3.13，并在全新环境构建、安装 wheel，执行覆盖率门槛及每周数据源契约测试。自动发布仍在路线图中。
 
 ## 许可证
 

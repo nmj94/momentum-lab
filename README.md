@@ -23,7 +23,7 @@ git clone https://github.com/nmj94/momentum-lab.git
 cd momentum-lab
 pip install -e .
 
-# Default: 5 representative configurations for each non-ML strategy,
+# Default: 5 deterministic Latin-hypercube configurations per non-ML strategy,
 # streamed to disk without retaining the full result set in RAM.
 momentum-lab GLD
 
@@ -54,40 +54,42 @@ momentum-lab SPY --all-strategies --exhaustive --workers 8
 The future PyPI distribution name is `momentum-research-lab`; the Python import
 and CLI remain `momentum_lab` and `momentum-lab`.
 
-## What changed in v0.5
+## What changed in v0.6
 
-- Safe defaults: quick, non-ML, streamed results.
-- Risk sizing is no longer optimized as an alpha parameter.
-- Every backtest enforces a final portfolio leverage cap.
-- Cash earns an explicit cash rate; financing applies only to exposure above 1x.
-- Crypto annualization is inferred as 365; other daily assets default to 252.
-- User-facing end dates are inclusive even though yfinance uses an exclusive end.
-- Yahoo downloads retry with bounded exponential backoff.
-- Cache files live in the operating system's user cache directory and are
-  written atomically.
-- Checkpoints use a fixed schema and resume only when data, strategy set,
-  search mode, package/schema version, Git revision, costs, and risk settings
-  match.
-- XGBoost and scikit-learn are optional dependencies.
-- The old “robustness grade” is described accurately as local parameter
-  sensitivity; it is not a multiple-testing correction.
+- Candidate workers receive only train/validation boundaries. Test metrics are
+  absent from checkpoints and top-candidate files, then evaluated once for a
+  copied final selection.
+- Selection uses minimum evidence constraints and Deflated Sharpe probability,
+  with temporal folds, a 95% Sharpe interval, expanding walk-forward selection
+  replay, and a CSCV/PBO estimate.
+- Insolvency is absorbing: equity is clamped at zero and cannot revive.
+- Search defaults to explicit next-close execution; same-close, next-open, and
+  delayed-close models are available.
+- Financing follows elapsed calendar days. Fractional target weights incur
+  drift-rebalancing turnover; short cash, collateral rebate, and borrow cost are
+  modeled separately.
+- SQLite is the transactional resume journal. CSV/JSON reports are exported
+  atomically, and the manifest records the lockfile and complete runtime stack.
+- ML models can predict the live label-unknown tail, and late-listed symbols can
+  reuse a provider-confirmed cache.
+- Quick mode uses a seeded Latin-hypercube design, while repeated smoothing
+  variants reuse their expensive base signal.
 
 ## Research flow
 
 ```text
 Ticker + versioned run configuration
         -> adjusted daily OHLCV data
-        -> non-overlapping train / validation / test periods
-        -> strategy and parameter evaluation
-        -> ranking by validation Sharpe
-        -> one test-window report for the selected result
+        -> 40% train / 40% temporal validation / 20% sealed test
+        -> candidate evaluation without access to test boundaries
+        -> constrained Deflated-Sharpe selection + walk-forward/PBO diagnostics
+        -> exactly one test-window report for a copied selected result
         -> local parameter-sensitivity analysis
         -> checkpoint, summary, benchmark, and run manifest
 ```
 
-The current train/validation/test flow is a baseline, not the final research
-methodology. Nested walk-forward validation, Deflated Sharpe Ratio, and
-Probability of Backtest Overfitting are planned before a 1.0 release.
+These diagnostics reduce, but cannot eliminate, data-mining risk. Independent
+datasets and prospective paper testing remain release gates for 1.0.
 
 ## Strategies
 
@@ -122,7 +124,7 @@ KNN sample/neighbor combinations are rejected before execution.
 
 Ensemble, Stacked, and Regime Aware.
 
-The complete v0.5 search space is 291,188 configurations: 159,668 non-ML and
+The complete v0.6 search space is 291,188 configurations: 159,668 non-ML and
 131,520 ML. Configuration count is not a measure of research quality.
 
 ## Python API
@@ -138,6 +140,9 @@ config = SearchConfig(
     cash_rate=0.0,
     financing_rate=0.05,
     max_leverage=1.5,
+    execution_model="next_close",
+    validation_folds=4,
+    min_validation_trades=2,
     result_dir="experiments",
     run_id="gld-research-v1",
     keep_all_results=False,
@@ -148,7 +153,8 @@ print(result["best"])
 print(result["benchmark_metrics"])
 print(result["parameter_sensitivity"])
 
-# Exact resume refuses to mix different source, data, strategy, or cost models.
+# Exact resume refuses to mix different source trees, environments, data,
+# strategy spaces, or accounting models. Git SHA itself is informational.
 resumed = run_search(config=config, resume=True)
 print(resumed["n_skipped"], resumed["n_errors"])
 ```
@@ -167,7 +173,9 @@ simulation = backtest(
     slippage_bps=3,
     cash_rate=0.03,
     financing_rate=0.06,
+    short_rebate_rate=0.01,
     max_leverage=1.0,
+    execution_lag=1,
     annualization=365,
 )
 print(evaluate(simulation["returns"], risk_free_rate=0.03, annualization=365))
@@ -190,9 +198,16 @@ momentum-lab TICKER [OPTIONS]
   --cash-rate RATE        Annual cash return (default: 0)
   --financing-rate RATE   Annual rate on exposure above 1x (default: 0)
   --borrow-bps BPS        Annual short borrow fee (default: 0)
+  --short-rebate-rate R   Annual short-collateral rebate (default: 0)
   --max-leverage X        Final absolute exposure cap (default: 2)
+  --execution-model M     same_close, next_close, next_open, delayed_close
+  --execution-lag N       Delay for delayed_close only
   --annualization N       Override inferred 252/365 periods per year
   --risk-free-rate RATE   Metric hurdle rate (default: 0)
+  --validation-folds N    Even temporal-fold count (default: 4)
+  --min-val-bars N        Minimum validation observations (default: 60)
+  --min-val-trades N      Minimum validation trades (default: 1)
+  --min-val-exposure X    Minimum mean absolute exposure (default: 0.01)
   --start DATE            Data start date (default: 2004-01-01)
   --end DATE              Inclusive data end date (default: current history)
   --refresh               Ignore cached market data
@@ -210,20 +225,23 @@ momentum-lab TICKER [OPTIONS]
 
 Each run is isolated under `experiments/<run_id>/`:
 
-- `run_config.json`: package/schema/Git version, source and data hashes, periods,
-  strategies, execution costs, and risk assumptions.
-- `all_results.csv`: fixed-schema, incremental checkpoint.
-- `top_results.csv`: top validation-ranked configurations.
+- `run_config.json`: package/schema/Git metadata, source/data/lock/environment
+  hashes, periods, strategies, execution costs, and risk assumptions.
+- `results.sqlite3`: canonical transactional checkpoint and resume journal.
+- `all_results.csv`: atomic human-readable export; train/validation only.
+- `top_results.csv`: validation-ranked candidates; no test metrics.
 - `robustness.csv`: local parameter-sensitivity summary when enabled.
 - `summary.json`: selected result, buy-and-hold benchmark, sensitivity output,
   result/error counts, and resume statistics.
 
 ## Methodological limitations
 
-- The current selector still ranks a large family on one validation window.
-- Local parameter sensitivity does not correct for multiple testing.
-- Close-derived signals assume execution compatible with the following
-  close-to-close return; exact MOC/next-open modeling is not yet available.
+- Deflated Sharpe uses a conservative independent-trial approximation; the
+  fold-based CSCV/PBO estimate is diagnostic rather than proof against overfit.
+- Repeatedly creating new run IDs and observing their final test reports can
+  still become human-level test leakage; preregistration is outside the code.
+- Local parameter sensitivity remains descriptive and is not itself a
+  multiple-testing correction.
 - The cost model is linear and does not model spread, market impact, capacity,
   halts, borrow availability, or taxes.
 - yfinance is suitable for personal research, not an authorized commercial
@@ -241,8 +259,8 @@ uv run pytest -m "not network" -q
 ```
 
 CI tests Python 3.10—3.13, builds and installs the wheel in a clean environment,
-and enforces a coverage floor. Scheduled network tests and release automation
-remain on the roadmap.
+enforces a coverage floor, and runs provider-contract tests weekly. Release
+automation remains on the roadmap.
 
 ## License
 

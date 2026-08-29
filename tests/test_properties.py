@@ -242,7 +242,4 @@ def test_quick_sample_size_distinctness_and_bounds(k):
     assert len(combos) == min(k, total)
     unique = {tuple(sorted(c.items())) for c in combos}
     assert len(unique) == len(combos)
-    if k >= 2 and total > k:
-        all_combos = s.get_param_combinations()
-        assert combos[0] == all_combos[0]
-        assert combos[-1] == all_combos[-1]
+    assert combos == _quick_sample(s, k)

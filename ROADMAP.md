@@ -18,27 +18,34 @@ evidence, explicit assumptions, and repeatability.
 - Clean-wheel CI, Python 3.10—3.13, and a coverage floor.
 - Accurate parameter-sensitivity terminology and documented limitations.
 
-## v0.6 — Research integrity
+## v0.6 — Research integrity and accounting correctness
 
-- Nested expanding and rolling walk-forward selection.
-- Purged/embargoed inner validation and a final outer OOS report.
-- Probabilistic and Deflated Sharpe Ratios.
-- CSCV / Probability of Backtest Overfitting estimates.
-- Effective independent-trial estimates for correlated parameter grids.
-- Bootstrap confidence intervals and minimum track-record requirements.
-- Cross-asset and cross-regime benchmark suites.
-- A sealed test window that is not written for every candidate configuration.
+- Test boundaries are withheld from candidate workers and test metrics are
+  absent from candidate artifacts; only the copied final selection is tested.
+- 40/40/20 development split with temporal validation folds and expanding
+  walk-forward parameter-selection replay.
+- Deflated Sharpe selection, analytic 95% Sharpe intervals, CSCV/PBO estimate,
+  and minimum observations/trades/exposure gates.
+- Absorbing bankruptcy, calendar-day financing, drift-aware rebalancing, and
+  explicit short cash/collateral accounting.
+- Same-close, next-close, next-open, and delayed-close execution assumptions.
+- Transactional SQLite resume journal, atomic report exports, environment and
+  lockfile fingerprints, deterministic Latin-hypercube quick sampling, and
+  reusable base-signal calculations.
+- Strict OHLC data contracts, reusable late-listing cache metadata, and weekly
+  provider-contract CI.
 
-## v0.7 — Execution realism and scale
+## v0.7 — Market realism and scale
 
-- Explicit next-close, next-open, and MOC-with-delay execution models.
-- Time-varying cash rates, financing spreads, short rebates, and borrow availability.
+- Time-varying cash rates, financing spreads, and borrow availability.
 - Spread, nonlinear impact, liquidity, capacity, and minimum-fee models.
-- Feature, indicator, and base-signal caching.
+- Feature and indicator DAG caching beyond the v0.6 base-signal reuse.
 - Budgeted staged search, early stopping, successive halving, and optional Optuna.
-- Parquet/DuckDB experiment storage with atomic batch journaling.
+- Optional Parquet/DuckDB analytics exports on top of the SQLite journal.
 - Typed `StrategySpec`, `RunConfig`, `RunResult`, and plugin entry points.
 - Automated HTML/Markdown research reports.
+- Cross-asset and cross-regime frozen benchmark suites.
+- Block-bootstrap intervals and correlated effective-trial estimates.
 
 ## v1.0 — Stable research platform
 

@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [master]
   workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * 1"
+
+permissions:
+  contents: read
 
 jobs:
   lint:
@@ -35,7 +40,7 @@ jobs:
       - name: Run tests with coverage (offline)
         run: uv run coverage run --source=momentum_lab -m pytest -m "not network" -q
       - name: Enforce coverage floor
-        run: uv run coverage report --fail-under=75
+        run: uv run coverage report --fail-under=78
 
   package:
     runs-on: ubuntu-latest
@@ -51,4 +56,17 @@ jobs:
           uv venv .wheel-venv
           uv pip install --python .wheel-venv/bin/python dist/*.whl
           .wheel-venv/bin/momentum-lab --version
-          .wheel-venv/bin/python -c "import momentum_lab; assert momentum_lab.__version__ == '0.5.0'"
+          .wheel-venv/bin/python -c "import momentum_lab; assert momentum_lab.__version__ == '0.6.0'"
+
+  network-test:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync --all-extras
+      - name: Run provider contract tests
+        run: uv run pytest -m network -q

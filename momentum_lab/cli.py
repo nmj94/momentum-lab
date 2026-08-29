@@ -48,13 +48,34 @@ def main():
     parser.add_argument("--financing-rate", type=float, default=0.0, help="Annual financing rate (decimal)")
     parser.add_argument("--borrow-bps", type=float, default=0.0, help="Annual short borrow fee in bps")
     parser.add_argument("--cash-rate", type=float, default=0.0, help="Annual return earned by uninvested cash")
+    parser.add_argument(
+        "--short-rebate-rate", type=float, default=0.0, help="Annual rebate earned on short-sale collateral"
+    )
     parser.add_argument("--max-leverage", type=float, default=2.0, help="Final absolute exposure cap")
+    parser.add_argument(
+        "--execution-model",
+        choices=["same_close", "next_close", "next_open", "delayed_close"],
+        default="next_close",
+        help="Fill model for close-derived signals (default: next_close)",
+    )
+    parser.add_argument(
+        "--execution-lag",
+        type=int,
+        default=1,
+        help="Close-bar delay used only by --execution-model delayed_close",
+    )
     parser.add_argument(
         "--annualization", type=float, default=None, help="Return periods per year (default: infer 252/365)"
     )
     parser.add_argument(
         "--risk-free-rate", type=float, default=0.0, help="Annual risk-free rate as a decimal (default: 0)"
     )
+    parser.add_argument(
+        "--validation-folds", type=int, default=4, help="Even number of temporal validation folds (default: 4)"
+    )
+    parser.add_argument("--min-val-bars", type=int, default=60, help="Minimum validation observations")
+    parser.add_argument("--min-val-trades", type=int, default=1, help="Minimum validation trades")
+    parser.add_argument("--min-val-exposure", type=float, default=0.01, help="Minimum mean validation exposure")
     parser.add_argument("--start", type=str, default="2004-01-01", help="Data start date")
     parser.add_argument("--end", type=str, default=None, help="Data end date (default: today)")
     parser.add_argument("--refresh", action="store_true", help="Ignore cached data and re-download from Yahoo")
@@ -108,9 +129,16 @@ def main():
         financing_rate=args.financing_rate,
         borrow_bps=args.borrow_bps,
         cash_rate=args.cash_rate,
+        short_rebate_rate=args.short_rebate_rate,
         max_leverage=args.max_leverage,
+        execution_model=args.execution_model,
+        execution_lag=args.execution_lag,
         annualization=args.annualization,
         risk_free_rate=args.risk_free_rate,
+        validation_folds=args.validation_folds,
+        min_validation_bars=args.min_val_bars,
+        min_validation_trades=args.min_val_trades,
+        min_validation_exposure=args.min_val_exposure,
         workers=args.workers,
         quick=args.quick,
         top_n=args.top,

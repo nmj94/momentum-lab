@@ -3,6 +3,37 @@
 All notable changes are documented here. The project follows semantic versioning
 for its public Python API and run/checkpoint schema.
 
+## [0.6.0] - 2026-08-29
+
+### Research integrity
+
+- Withheld the sealed test boundary from all candidate workers and removed test
+  columns from checkpoints and validation-ranked outputs.
+- Added temporal validation folds, expanding walk-forward selection replay,
+  Deflated Sharpe selection, analytic Sharpe intervals, CSCV/PBO diagnostics,
+  and minimum evidence gates.
+- Replaced lexicographic quick sampling with a deterministic Latin-hypercube
+  design and reused base signals across smoothing variants.
+
+### Accounting and data correctness
+
+- Made bankruptcy absorbing and added drift-aware target-weight rebalancing.
+- Accrued financing by elapsed calendar days and separated short cash,
+  collateral rebates, financing, and borrow fees.
+- Added explicit same-close, next-close, next-open, and delayed-close models.
+- Preserved one continuous ledger across train/validation/test boundaries.
+- Restored ML predictions on the forward-label-unknown tail.
+- Added strict OHLC invariants and persistent late-listing cache metadata.
+
+### Reproducibility and operations
+
+- Replaced CSV as the canonical resume checkpoint with transactional SQLite;
+  CSV and JSON artifacts are now atomic exports.
+- Recorded the dependency lock hash and Python/data-science runtime versions;
+  source identity, rather than an incidental Git commit SHA, controls resume.
+- Added typed provider-unavailability errors and weekly provider-contract CI.
+- Raised the aggregate coverage gate from 75% to 78%.
+
 ## [0.5.0] - 2026-08-29
 
 ### Changed

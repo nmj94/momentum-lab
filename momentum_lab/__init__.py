@@ -3,7 +3,7 @@
 from ._version import __version__
 from .backtest import backtest, evaluate, evaluate_strategy
 from .config import SearchConfig, load_search_config
-from .data import download_data, prepare_data
+from .data import MarketDataUnavailableError, download_data, prepare_data
 from .robustness import robustness_check
 from .search import run_search
 from .strategies import (
@@ -15,6 +15,7 @@ from .strategies import (
 
 __all__ = [
     "STRATEGY_REGISTRY",
+    "MarketDataUnavailableError",
     "RegimeAware",
     "SearchConfig",
     "__version__",
