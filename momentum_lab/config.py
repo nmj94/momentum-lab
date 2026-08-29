@@ -22,10 +22,12 @@ class SearchConfig:
     slippage_bps: float = 0.0
     financing_rate: float = 0.0
     borrow_bps: float = 0.0
-    annualization: float = 252
-    risk_free_rate: float = 0.04
+    cash_rate: float = 0.0
+    max_leverage: float = 2.0
+    annualization: float | None = None
+    risk_free_rate: float = 0.0
     workers: int = 1
-    quick: bool = False
+    quick: bool = True
     top_n: int = 50
     start: str = "2004-01-01"
     end: str | None = None
@@ -34,7 +36,7 @@ class SearchConfig:
     use_cache: bool = True
     result_dir: str | None = None
     run_id: str | None = None
-    keep_all_results: bool = True
+    keep_all_results: bool = False
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, Any]) -> "SearchConfig":

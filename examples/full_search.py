@@ -1,24 +1,25 @@
 """Full search: Test all strategies with all parameters."""
 
-from momentum_lab import run_search
+from momentum_lab import STRATEGY_REGISTRY, run_search
 
 
 def main():
-    # Full exhaustive search (may take hours)
+    # Full exhaustive search, including experimental ML (may take days).
     results = run_search(
         ticker="SPY",
-        strategies=None,  # All strategies
+        strategies=list(STRATEGY_REGISTRY),
         cost_bps=1.0,  # 1 bps transaction cost
         workers=8,  # 8 parallel workers
         quick=False,  # Full parameter grid
         top_n=50,  # Keep top 50
         start="2004-01-01",
+        keep_all_results=False,  # Stream the fixed-schema checkpoint to disk
     )
 
     # Access results
     print(f"\n{'=' * 60}")
     print("  Search complete!")
-    print(f"  Total experiments: {len(results['all_results'])}")
+    print(f"  Total experiments: {results['n_results']}")
     best = results.get("best")
     if best is not None:
         print(f"  Best strategy: {best['strategy']}")

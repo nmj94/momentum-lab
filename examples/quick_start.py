@@ -1,4 +1,4 @@
-"""Quick start: Find the best momentum strategy for any ticker in 3 lines."""
+"""Quick start: compare momentum strategies for a ticker."""
 
 from momentum_lab import run_search
 
@@ -12,7 +12,7 @@ else:
     print(f"\nBest strategy: {best['strategy']}")
     print(f"Best params: {best['params']}")
 
-# Robustness check result (overfitting detection)
-rob = results.get("robustness") or {}
+# Local parameter sensitivity; this is not an overfitting test.
+rob = results.get("parameter_sensitivity") or {}
 if rob.get("grade"):
-    print(f"Robustness grade: {rob['grade']} ({rob.get('verdict', 'n/a')})")
+    print(f"Sensitivity grade: {rob['grade']} ({rob.get('verdict', 'n/a')})")

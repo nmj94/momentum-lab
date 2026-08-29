@@ -1,7 +1,6 @@
-"""momentum-lab: Autonomous momentum strategy research."""
+"""momentum-lab: Reproducible momentum strategy research."""
 
-__version__ = "0.4.0"
-
+from ._version import __version__
 from .backtest import backtest, evaluate, evaluate_strategy
 from .config import SearchConfig, load_search_config
 from .data import download_data, prepare_data
@@ -18,6 +17,7 @@ __all__ = [
     "STRATEGY_REGISTRY",
     "RegimeAware",
     "SearchConfig",
+    "__version__",
     "backtest",
     "download_data",
     "evaluate",

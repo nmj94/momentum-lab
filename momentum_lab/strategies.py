@@ -1,7 +1,7 @@
 """strategies.py - 26 momentum strategies with exhaustive parameter grids.
 
 Classes:
-    BaseStrategy: Abstract base with universal params (position_size, signal_smooth)
+    BaseStrategy: Abstract base with universal search param (signal_smooth)
     TSMOM, MACross, MACD, RSI, ROC, Bollinger, Donchian, DualMomentum,
     TripleMA, VolScale, Accel, ZScore, HeikinAshi, Supertrend, MultiBreakout
     _MLBase, MLLogReg, MLRF, MLXGB, MLKNN, MLSVM, MLNB, MLAda, MLExtraTrees
@@ -33,10 +33,10 @@ def _wma(series: pd.Series, period: int) -> pd.Series:
 class BaseStrategy:
     name = "base"
     param_grid: ClassVar[dict] = {}
-    UNIVERSAL_PARAMS: ClassVar[dict] = {
-        "position_size": [0.25, 0.5, 0.75, 1.0, 1.5, 2.0],
-        "signal_smooth": [0, 2, 3, 5, 10],
-    }
+    # Risk sizing is deliberately excluded from alpha selection.  Searching
+    # ``position_size`` mechanically favors leverage when Sharpe subtracts a
+    # fixed risk-free rate. Callers may still pass position_size to ``run``.
+    UNIVERSAL_PARAMS: ClassVar[dict] = {"signal_smooth": [0, 2, 3, 5, 10]}
 
     def generate_positions(self, data, **params):
         raise NotImplementedError
@@ -60,8 +60,8 @@ class BaseStrategy:
     def iter_param_combinations(self):
         """Yield valid parameter combinations one at a time.
 
-        The largest grids approach a million combinations; materializing
-        them as a list (as the previous implementation did) causes huge
+        The combined grids contain hundreds of thousands of combinations;
+        materializing them as a list (as the previous implementation did) causes
         memory spikes just to iterate or count.
         """
         all_params = {**self.param_grid, **self.UNIVERSAL_PARAMS}
@@ -569,7 +569,7 @@ class MultiBreakout(BaseStrategy):
 
 
 class _MLBase(BaseStrategy):
-    UNIVERSAL_PARAMS: ClassVar[dict] = {"position_size": [0.5, 1.0, 2.0], "signal_smooth": [0, 5]}
+    UNIVERSAL_PARAMS: ClassVar[dict] = {"signal_smooth": [0, 5]}
 
     def _prepare_data(self, data, lookback, forward, feature_cols=None):
         """Build the (features, label) pair for walk-forward training.
@@ -669,7 +669,7 @@ def _sklearn_penalty_deprecated():
 class MLLogReg(_MLBase):
     name = "ml_logreg"
     param_grid: ClassVar[dict] = {
-        "lookback": [21, 42, 63, 126],
+        "lookback": [252, 504, 756],
         "forward": [1, 3, 5, 10, 21],
         "C": [0.001, 0.01, 0.1, 0.5, 1.0, 5.0, 10.0, 50.0],
         "penalty": ["l2", "l1"],
@@ -703,7 +703,7 @@ class MLLogReg(_MLBase):
 class MLRF(_MLBase):
     name = "ml_rf"
     param_grid: ClassVar[dict] = {
-        "lookback": [21, 42, 63],
+        "lookback": [252, 504, 756],
         "forward": [1, 5, 21],
         "n_estimators": [50, 100, 200, 300],
         "max_depth": [3, 5, 8, 10, None],
@@ -744,7 +744,7 @@ class MLRF(_MLBase):
 class MLXGB(_MLBase):
     name = "ml_xgb"
     param_grid: ClassVar[dict] = {
-        "lookback": [21, 42, 63],
+        "lookback": [252, 504, 756],
         "forward": [1, 5, 21],
         "n_estimators": [50, 100, 200, 300],
         "max_depth": [2, 3, 5, 7, 10],
@@ -790,7 +790,7 @@ class MLXGB(_MLBase):
 class MLKNN(_MLBase):
     name = "ml_knn"
     param_grid: ClassVar[dict] = {
-        "lookback": [21, 42, 63],
+        "lookback": [252, 504, 756],
         "forward": [1, 5, 21],
         "n_neighbors": [3, 5, 7, 10, 15, 21, 30, 50],
         "weights": ["uniform", "distance"],
@@ -798,6 +798,16 @@ class MLKNN(_MLBase):
         "long_short": [True, False],
         "retrain": [True, False],
     }
+
+    def is_valid_params(self, params):
+        # At the first prediction block, purging removes ``forward`` labels
+        # from the initial training window.  Reject configurations that cannot
+        # satisfy KNN's sample-count requirement instead of running thousands
+        # of experiments that are guaranteed to fail at predict time.
+        available = params["lookback"] - params["forward"]
+        while available < 2:
+            available += 21
+        return params["n_neighbors"] <= available
 
     def generate_positions(
         self, data, lookback=42, forward=5, n_neighbors=10, weights="uniform", p=2, long_short=True, retrain=True
@@ -814,7 +824,7 @@ class MLKNN(_MLBase):
 class MLSVM(_MLBase):
     name = "ml_svm"
     param_grid: ClassVar[dict] = {
-        "lookback": [21, 42, 63],
+        "lookback": [252, 504, 756],
         "forward": [1, 5, 21],
         "C": [0.01, 0.1, 0.5, 1.0, 5.0, 10.0, 50.0],
         "kernel": ["rbf", "linear", "poly", "sigmoid"],
@@ -839,7 +849,7 @@ class MLSVM(_MLBase):
 class MLNB(_MLBase):
     name = "ml_nb"
     param_grid: ClassVar[dict] = {
-        "lookback": [21, 42, 63],
+        "lookback": [252, 504, 756],
         "forward": [1, 5, 21],
         "var_smoothing": [1e-10, 1e-9, 1e-8, 1e-7, 1e-6, 1e-5, 1e-4, 1e-3],
         "long_short": [True, False],
@@ -859,7 +869,7 @@ class MLNB(_MLBase):
 class MLAda(_MLBase):
     name = "ml_ada"
     param_grid: ClassVar[dict] = {
-        "lookback": [21, 42, 63],
+        "lookback": [252, 504, 756],
         "forward": [1, 5, 21],
         "n_estimators": [50, 100, 200, 300],
         "learning_rate": [0.01, 0.05, 0.1, 0.3, 0.5, 1.0, 2.0],
@@ -897,7 +907,7 @@ class MLAda(_MLBase):
 class MLExtraTrees(_MLBase):
     name = "ml_extra_trees"
     param_grid: ClassVar[dict] = {
-        "lookback": [21, 42, 63],
+        "lookback": [252, 504, 756],
         "forward": [1, 5, 21],
         "n_estimators": [50, 100, 200, 300],
         "max_depth": [3, 5, 8, 10, None],
@@ -1062,7 +1072,7 @@ class RegimeAware(BaseStrategy):
         "fast_exit_threshold": [-0.02, -0.03, -0.05],
         "bearish_mode": ["cash", "short"],
     }
-    UNIVERSAL_PARAMS: ClassVar[dict] = {"position_size": [1.0, 1.5, 2.0], "signal_smooth": [0, 5]}
+    UNIVERSAL_PARAMS: ClassVar[dict] = {"signal_smooth": [0, 5]}
 
     def generate_positions(
         self,

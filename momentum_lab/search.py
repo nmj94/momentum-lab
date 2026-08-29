@@ -2,6 +2,7 @@
 
 import hashlib
 import heapq
+import importlib.util
 import json
 import subprocess
 import time
@@ -14,11 +15,12 @@ from uuid import uuid4
 import numpy as np
 import pandas as pd
 
+from ._version import __version__
 from .backtest import RISK_FREE_RATE, backtest, evaluate, get_buy_and_hold
 from .config import load_search_config
-from .data import prepare_data
+from .data import infer_annualization, prepare_data
 from .robustness import robustness_check
-from .strategies import STRATEGY_REGISTRY, get_strategy
+from .strategies import CLASSIC_STRATEGIES, STRATEGY_REGISTRY, get_strategy
 
 try:
     from tqdm import tqdm
@@ -29,6 +31,26 @@ except ImportError:
 
 
 RESULT_DIR = Path("experiments")
+ENGINE_SCHEMA_VERSION = 2
+METRIC_KEYS = (
+    "sharpe",
+    "sortino",
+    "calmar",
+    "max_drawdown",
+    "cagr",
+    "total_return",
+    "volatility",
+    "win_rate",
+    "profit_factor",
+    "skew",
+    "kurtosis",
+)
+RESULT_COLUMNS = [
+    "strategy",
+    "params",
+    "error",
+    *(f"{period}_{metric}" for period in ("train", "val", "test") for metric in METRIC_KEYS),
+]
 
 # Shared state for parallel sub-processes (set via Pool initializer).
 _POOL_STATE = None
@@ -49,8 +71,9 @@ def _worker_run(args):
 def _jsonable(v):
     if isinstance(v, (np.integer,)):
         return int(v)
-    if isinstance(v, (np.floating,)):
-        return float(v)
+    if isinstance(v, (float, np.floating)):
+        value = float(v)
+        return value if np.isfinite(value) else None
     if isinstance(v, (np.bool_,)):
         return bool(v)
     if isinstance(v, dict):
@@ -96,6 +119,19 @@ def _git_revision():
     return revision or "unknown"
 
 
+def _source_fingerprint():
+    """Hash package source so dirty or non-Git installs remain resume-safe."""
+    package_dir = Path(__file__).resolve().parent
+    digest = hashlib.sha256()
+    for path in sorted(package_dir.rglob("*.py"), key=lambda item: str(item.relative_to(package_dir))):
+        relative = path.relative_to(package_dir).as_posix()
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
 def _data_snapshot(df):
     """Return a stable content hash for the prepared data frame."""
     digest = hashlib.sha256()
@@ -114,8 +150,8 @@ def _results_rows(results):
         }
         for period in ["train", "val", "test"]:
             m = r.get(f"{period}_metrics", {})
-            for k, v in m.items():
-                row[f"{period}_{k}"] = v
+            for metric in METRIC_KEYS:
+                row[f"{period}_{metric}"] = m.get(metric, np.nan)
         rows.append(row)
     return rows
 
@@ -129,7 +165,7 @@ def _append_results_csv(results, path, write_header):
     rows = _results_rows(results)
     if not rows:
         return
-    pd.DataFrame(rows).to_csv(
+    pd.DataFrame(rows, columns=RESULT_COLUMNS).to_csv(
         path,
         mode="a",
         header=write_header,
@@ -199,19 +235,37 @@ def _load_checkpoint(path):
     return results
 
 
-# Checkpoint metrics are only comparable with a resumed run when the data and
-# the cost/evaluation model match.  Everything else (strategy subset, quick
-# mode, top_n, workers, robust) may differ freely between a run and its resume.
+# Checkpoint metrics are only comparable with a resumed run when source, data,
+# search space, and cost/evaluation model match. Presentation-only options such
+# as top_n, workers, and sensitivity reporting may differ.
 _RESUME_COMPAT_FIELDS = (
     "ticker",
+    "strategies",
+    "quick",
     "data_snapshot",
+    "package_version",
+    "engine_schema_version",
+    "git_sha",
+    "source_fingerprint",
     "cost_bps",
     "slippage_bps",
     "financing_rate",
     "borrow_bps",
+    "cash_rate",
+    "max_leverage",
     "annualization",
     "risk_free_rate",
 )
+
+
+def _check_strategy_dependencies(strategy_names):
+    """Fail once before a run if an explicitly requested ML extra is absent."""
+    if any(name.startswith("ml_") for name in strategy_names) and importlib.util.find_spec("sklearn") is None:
+        raise RuntimeError("ML strategies require the optional dependency set: pip install 'momentum-research-lab[ml]'")
+    if "ml_xgb" in strategy_names and importlib.util.find_spec("xgboost") is None:
+        raise RuntimeError(
+            "ml_xgb requires the optional XGBoost dependency set: pip install 'momentum-research-lab[xgb]'"
+        )
 
 
 def _check_resume_compatibility(run_dir, metadata):
@@ -301,6 +355,7 @@ def run_single_experiment(
         }
     prices = df["close"]
     results = {"strategy": strategy_name, "params": params, "train_metrics": {}, "val_metrics": {}, "test_metrics": {}}
+    period_errors = []
     for pname, (start, end) in periods.items():
         try:
             pp = positions.loc[start:end]
@@ -314,8 +369,11 @@ def run_single_experiment(
                 risk_free_rate=risk_free_rate,
                 annualization=backtest_kwargs.get("annualization", 252),
             )
-        except Exception:
+        except Exception as exc:
             results[f"{pname}_metrics"] = {"sharpe": -99}
+            period_errors.append(f"{pname}: {exc}")
+    if period_errors:
+        results["error"] = "; ".join(period_errors)
     return results
 
 
@@ -326,10 +384,12 @@ def run_search(
     slippage_bps=0.0,
     financing_rate=0.0,
     borrow_bps=0.0,
-    annualization=252,
+    cash_rate=0.0,
+    max_leverage=2.0,
+    annualization=None,
     risk_free_rate=RISK_FREE_RATE,
     workers=1,
-    quick=False,
+    quick=True,
     top_n=50,
     start="2004-01-01",
     end=None,
@@ -338,34 +398,37 @@ def run_search(
     use_cache=True,
     result_dir=None,
     run_id=None,
-    keep_all_results=True,
+    keep_all_results=False,
     config=None,
     resume=False,
 ):
-    """Run exhaustive strategy search for any ticker.
+    """Compare momentum strategies for a ticker.
 
     Args:
         ticker: Yahoo Finance ticker (e.g. "GLD", "SPY", "BTC-USD").
-        strategies: List of strategy names. None = all.
+        strategies: List of strategy names. None selects the non-ML strategies.
         cost_bps: Transaction cost in basis points.
         slippage_bps: Additional transaction slippage in basis points.
-        financing_rate: Annual financing rate applied to held exposure.
+        financing_rate: Annual financing rate applied to exposure above 1x.
         borrow_bps: Annualized short borrow fee in basis points.
-        annualization: Return periods per year (252 for trading days, 365 for crypto).
+        cash_rate: Annual return earned by uninvested cash.
+        max_leverage: Final absolute exposure cap applied by the backtest.
+        annualization: Return periods per year. None infers 365 for common
+            Yahoo crypto pairs and 252 otherwise.
         risk_free_rate: Annual risk-free rate as a decimal, used in Sharpe/Sortino.
         workers: Number of parallel workers (1 = sequential).
-        quick: If True, only test 5 params per strategy.
+        quick: If True (default), only test 5 params per strategy.
         top_n: Number of top results to keep.
         start: Data start date.
         end: Data end date. None = today.
-        robust: If True, run a neighborhood robustness check on the best params.
-        robust_frac: Perturbation fraction for the robustness check.
+        robust: If True, run local parameter-sensitivity analysis on the selected params.
+        robust_frac: Perturbation fraction for the sensitivity analysis.
         use_cache: If True, reuse cached OHLCV data when available.
         result_dir: Parent directory for run artifacts. Defaults to ``experiments``.
         run_id: Optional stable run directory name. A unique ID is generated by default.
-        keep_all_results: If True (default), retain every experiment in memory
-            and return it as ``all_results``.  Full grids approach a million
-            experiments (~1.3 KB each, i.e. >1 GB of RAM); pass False to
+        keep_all_results: If True, retain every experiment in memory
+            and return it as ``all_results``. Full grids can contain hundreds
+            of thousands of experiments; pass False to
             stream results to ``all_results.csv`` and keep only the top-N
             ranking in memory.  ``all_results`` is then an empty list and
             ``n_results`` carries the experiment count.
@@ -375,8 +438,8 @@ def run_search(
             explicit ``run_id`` and evaluate only missing parameter combinations.
 
     Returns:
-        dict with 'all_results', 'top_results', 'best', 'robustness',
-        'run_id', 'result_dir', and 'n_results'.
+        A dict containing results, the selected candidate, benchmark metrics,
+        local parameter sensitivity, run paths, and experiment/error counts.
     """
     if config is not None:
         configured = load_search_config(config).to_kwargs()
@@ -386,6 +449,8 @@ def run_search(
         slippage_bps = configured["slippage_bps"]
         financing_rate = configured["financing_rate"]
         borrow_bps = configured["borrow_bps"]
+        cash_rate = configured["cash_rate"]
+        max_leverage = configured["max_leverage"]
         annualization = configured["annualization"]
         risk_free_rate = configured["risk_free_rate"]
         workers = configured["workers"]
@@ -400,6 +465,8 @@ def run_search(
         run_id = configured["run_id"]
         keep_all_results = configured["keep_all_results"]
 
+    annualization = infer_annualization(ticker) if annualization is None else annualization
+
     # Validate up front: an invalid cost/annualization would otherwise be
     # swallowed by run_single_experiment's per-combo error handling and
     # silently turn the whole run into sentinel (-99) results.
@@ -407,6 +474,10 @@ def run_search(
         raise ValueError("cost, financing and slippage parameters cannot be negative")
     if annualization <= 0:
         raise ValueError("annualization must be positive")
+    if max_leverage <= 0:
+        raise ValueError("max_leverage must be positive")
+    if not np.isfinite(cash_rate) or not np.isfinite(risk_free_rate):
+        raise ValueError("cash_rate and risk_free_rate must be finite")
     if top_n < 1:
         raise ValueError("top_n must be at least 1")
     if workers < 1:
@@ -429,18 +500,30 @@ def run_search(
         "financing_rate": financing_rate,
         "borrow_bps": borrow_bps,
         "slippage_bps": slippage_bps,
+        "cash_rate": cash_rate,
+        "max_leverage": max_leverage,
     }
-    print(f"momentum-lab: Searching optimal strategies for {ticker}")
+    print(f"momentum-lab: Comparing strategies for {ticker}")
 
     data, df = prepare_data(ticker, start=start, end=end, use_cache=use_cache, annualization=annualization)
     prices = df["close"]
     n = len(df)
     periods = _split_periods(df.index)
+    if strategies is None:
+        # Safe default: a small quick run over non-ML strategies. ML remains
+        # available when requested explicitly but no longer turns a one-line
+        # command into days of model fitting and heavy optional dependencies.
+        strategies = list(CLASSIC_STRATEGIES)
+    elif isinstance(strategies, str):
+        strategies = [name.strip() for name in strategies.split(",") if name.strip()]
+    else:
+        strategies = list(strategies)
+
     metadata = {
         "run_id": run_id,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "ticker": ticker,
-        "strategies": strategies if strategies is not None else list(STRATEGY_REGISTRY),
+        "strategies": strategies,
         "cost_bps": cost_bps,
         **backtest_kwargs,
         "risk_free_rate": risk_free_rate,
@@ -453,6 +536,9 @@ def run_search(
         "data_end": str(df.index[-1]),
         "n_bars": n,
         "git_sha": _git_revision(),
+        "source_fingerprint": _source_fingerprint(),
+        "package_version": __version__,
+        "engine_schema_version": ENGINE_SCHEMA_VERSION,
         "data_snapshot": _data_snapshot(df),
         "periods": {name: [str(bounds[0]), str(bounds[1])] for name, bounds in periods.items()},
         "robust": robust,
@@ -469,10 +555,8 @@ def run_search(
     print(f"  Val:   {periods['val'][0].date()} ~ {periods['val'][1].date()}")
     print(f"  Test:  {periods['test'][0].date()} ~ {periods['test'][1].date()}")
 
-    if strategies is None:
-        strategies = list(STRATEGY_REGISTRY.keys())
-
     known = [s for s in strategies if s in STRATEGY_REGISTRY]
+    _check_strategy_dependencies(known)
     for s in strategies:
         if s not in STRATEGY_REGISTRY:
             print(f"  WARNING: Unknown strategy '{s}' skipped. Use --list to see available names.")
@@ -483,6 +567,7 @@ def run_search(
     all_results = []
     n_results = 0
     n_skipped = 0
+    n_errors = 0
     # Bounded min-heap of (val_sharpe, seq, result) holding the current top-N.
     # Maintained incrementally so full grids never need every result resident.
     top_heap = []
@@ -494,7 +579,7 @@ def run_search(
         # checkpoint: resume dedup keeps the FIRST row per key, so stale rows
         # (possibly computed under a different config) would win over the new
         # ones.  Move the old checkpoint aside instead of silently mixing.
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        stamp = f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{uuid4().hex[:6]}"
         backup = run_dir / f"all_results.{stamp}.bak.csv"
         warnings.warn(
             f"{all_csv} exists from a previous run; moved to {backup.name}. "
@@ -522,6 +607,8 @@ def run_search(
             completed_keys.add(key)
             n_skipped += 1
             n_results += 1
+            if previous.get("error"):
+                n_errors += 1
             _offer_top(previous)
             if keep_all_results:
                 all_results.append(previous)
@@ -548,8 +635,10 @@ def run_search(
             batch.clear()
 
     def _handle(result):
-        nonlocal n_results
+        nonlocal n_errors, n_results
         n_results += 1
+        if result.get("error"):
+            n_errors += 1
         completed_keys.add(_params_key(result.get("strategy", ""), result.get("params", {})))
         _offer_top(result)
         if keep_all_results:
@@ -568,8 +657,8 @@ def run_search(
                 combos = _quick_sample(s, 5)
                 n_combos = len(combos)
             else:
-                # Iterate lazily: the largest grids approach a million
-                # combinations and must not be materialized as a list.
+                # Iterate lazily: large grids contain hundreds of thousands
+                # of combinations and must not be materialized as a list.
                 combos = s.iter_param_combinations()
                 n_combos = s.count_param_combinations()
             if resume:
@@ -609,7 +698,7 @@ def run_search(
             pool.join()
 
     elapsed = time.time() - t0
-    print(f"\n  Search complete! {n_results} results in {elapsed / 60:.1f} min")
+    print(f"\n  Search complete! {n_results} results ({n_errors} errors) in {elapsed / 60:.1f} min")
 
     if n_results == 0:
         print("  WARNING: No experiments completed. Check strategy names and data.")
@@ -622,6 +711,9 @@ def run_search(
             "result_dir": str(run_dir),
             "n_results": 0,
             "n_skipped": n_skipped,
+            "n_errors": n_errors,
+            "benchmark_metrics": None,
+            "parameter_sensitivity": None,
         }
 
     # Phase 2: Rank by val Sharpe
@@ -634,6 +726,7 @@ def run_search(
         all_results = []
 
     # Phase 3: Test set evaluation
+    benchmark_metrics = None
     if top:
         best = top[0]
         sname = best["strategy"]
@@ -656,7 +749,8 @@ def run_search(
                 risk_free_rate=risk_free_rate,
                 annualization=annualization,
             )
-        bh_m = evaluate(
+            best["test_metrics"] = test_m
+        benchmark_metrics = evaluate(
             backtest(
                 get_buy_and_hold(prices.loc[periods["test"][0] : periods["test"][1]]),
                 prices.loc[periods["test"][0] : periods["test"][1]],
@@ -671,16 +765,17 @@ def run_search(
         print(f"\n  Best: {sname}")
         print(f"  Params: {_params_to_str(params)}")
         print(f"  Val Sharpe:   {best['val_metrics'].get('sharpe', 0):.4f}")
-        print(f"  Test Sharpe:  {test_m['sharpe']:.4f} (B&H: {bh_m['sharpe']:.4f})")
-        print(f"  Test CAGR:    {test_m['cagr']:.2%} (B&H: {bh_m['cagr']:.2%})")
-        print(f"  Test MaxDD:   {test_m['max_drawdown']:.2%} (B&H: {bh_m['max_drawdown']:.2%})")
+        print(f"  Test Sharpe:  {test_m['sharpe']:.4f} (B&H: {benchmark_metrics['sharpe']:.4f})")
+        print(f"  Test CAGR:    {test_m['cagr']:.2%} (B&H: {benchmark_metrics['cagr']:.2%})")
+        print(f"  Test MaxDD:   {test_m['max_drawdown']:.2%} (B&H: {benchmark_metrics['max_drawdown']:.2%})")
     else:
         best = None
+        print("  WARNING: No valid experiments remained after evaluation.")
 
     # Phase 4: Robustness check on the best parameters
     robustness = None
     if robust and best is not None:
-        print(f"\n  [Phase 4] Robustness check (perturbing optimal params by {robust_frac:.0%}) ...")
+        print(f"\n  [Phase 4] Parameter sensitivity (perturbing selected params by {robust_frac:.0%}) ...")
         robustness = robustness_check(
             data,
             df,
@@ -708,9 +803,9 @@ def run_search(
                 f"Positive neighbors: {robustness['pct_positive']:.1%}"
             )
             print(
-                f"    Robustness grade: {robustness['grade']} "
+                f"    Sensitivity grade: {robustness['grade']} "
                 f"({robustness['verdict']})"
-                + ("  [ISOLATED PEAK - likely overfit]" if robustness["isolated_peak"] else "")
+                + ("  [ISOLATED PEAK - fragile locally]" if robustness["isolated_peak"] else "")
             )
             pd.DataFrame(
                 [
@@ -749,13 +844,30 @@ def run_search(
             rows.append(row)
         pd.DataFrame(rows).to_csv(run_dir / "top_results.csv", index=False, encoding="utf-8-sig")
 
+    summary = {
+        "run_id": run_id,
+        "best": _jsonable(best),
+        "benchmark_metrics": _jsonable(benchmark_metrics),
+        "parameter_sensitivity": _jsonable(robustness),
+        "n_results": n_results,
+        "n_skipped": n_skipped,
+        "n_errors": n_errors,
+    }
+    (run_dir / "summary.json").write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2, allow_nan=False),
+        encoding="utf-8",
+    )
+
     return {
         "all_results": all_results,
         "top_results": top,
         "best": best,
         "robustness": robustness,
+        "parameter_sensitivity": robustness,
+        "benchmark_metrics": benchmark_metrics,
         "run_id": run_id,
         "result_dir": str(run_dir),
         "n_results": n_results,
         "n_skipped": n_skipped,
+        "n_errors": n_errors,
     }

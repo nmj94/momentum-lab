@@ -1,267 +1,248 @@
 # Momentum Lab
 
-**Find the optimal momentum trading strategy for any asset. Just provide a ticker.**
-**只需提供一个股票代码，自动找到最优动量交易策略。**
+**Reproducible momentum-strategy research and parameter-sensitivity evaluation.**
 
 [English](README.md) | [中文](README_CN.md)
 
-Momentum Lab automatically tests 26 strategies across more than a million parameter combinations to find the best-performing strategy for your chosen asset. It includes classic momentum indicators, machine learning models, and an adaptive regime-aware strategy that switches between sub-strategies based on market conditions.
+Momentum Lab is a research workbench for comparing classic momentum rules,
+experimental machine-learning models, and regime-conditioned strategies under
+explicit data, execution, cost, and risk assumptions.
 
-## Quick Start
+It does **not** claim to discover a universally optimal strategy. A high
+historical score can be caused by selection bias or overfitting, especially
+when many configurations are tried. Results are research evidence, not trading
+advice.
 
-```bash
-# Install
-pip install momentum-lab
+## Safe quick start
 
-# Find the best strategy for gold (GLD)
-momentum-lab GLD
+The project is currently installed from source. The old PyPI name
+`momentum-lab` belongs to an unrelated package; do not install it.
 
-# Quick search for S&P 500
-momentum-lab SPY --quick
-
-# Search Bitcoin with 4 parallel workers
-momentum-lab BTC-USD --workers 4
-
-# Search specific strategies only
-momentum-lab AAPL --strategies tsmom,ma_cross,rsi,regime_aware
-```
-
-### Config-driven and resumable runs (P1)
-
-Store a research run as JSON so the same configuration can be reproduced
-locally, in CI, or by a later job:
-
-```bash
-momentum-lab --config examples/search_config.json
-momentum-lab --config examples/search_config.json --resume
-```
-
-`--resume` reads completed combinations from
-`result_dir/run_id/all_results.csv` and evaluates only missing combinations,
-so the config should pin a stable `run_id`. Config fields take precedence over
-CLI defaults. The Python API accepts the same JSON path, a mapping, or a
-`SearchConfig` instance:
-
-```python
-from momentum_lab import SearchConfig, run_search
-
-config = SearchConfig(ticker="GLD", strategies=["tsmom"], quick=True,
-                      robust=False, result_dir="experiments", run_id="gld-p1")
-result = run_search(config=config)
-resumed = run_search(config=config, resume=True)
-print(resumed["n_skipped"], "experiments loaded from checkpoint")
-```
-
-## How It Works
-
-```
-You provide a ticker (e.g. GLD)
-        |
-        v
-  Download data via Yahoo Finance
-        |
-        v
-  Split into Train / Validation / Test
-        |
-        v
-  Test 26 strategies x thousands of parameters
-  (classic momentum, ML models, regime-aware)
-        |
-        v
-  Rank by Validation Sharpe Ratio
-        |
-        v
-  Evaluate best strategy on Test set
-        |
-        v
-  Robustness check: perturb optimal params
-  to detect overfitting (isolated peak)
-        |
-        v
-  Report: Best strategy + parameters + metrics
-```
-
-## Strategies Included
-
-### Classic Momentum (15)
-| Strategy | Description | Key Parameters |
-|----------|-------------|----------------|
-| TSMOM | Time-series momentum | lookback, threshold, skip_recent |
-| MA Cross | Moving average crossover | fast, slow, ma_type (SMA/EMA/WMA/DEMA) |
-| MACD | MACD signal crossover | fast, slow, signal, mode |
-| RSI | RSI momentum/reversal | period, buy/sell thresholds, smoothing |
-| ROC | Rate of change | period, threshold, smoothing |
-| Bollinger | Bollinger band breakout | period, num_std, band_width_filter |
-| Donchian | Donchian channel breakout | period, exit_period, confirmation |
-| Dual Momentum | Absolute momentum | lookback, threshold, smoothing |
-| Triple MA | Three MA alignment | fast, medium, slow, ma_type |
-| Vol Scale | TSMOM + volatility targeting | lookback, vol_target, vol_lookback |
-| Acceleration | Price acceleration | short_lb, long_lb, threshold |
-| Z-Score | Z-score momentum/reversion | lookback, entry_z, exit_z |
-| Heikin Ashi | HA candlestick | smooth, confirmation |
-| Supertrend | ATR-based trend following | atr_period, multiplier |
-| Multi Breakout | Multi-period breakout vote | periods, vote_threshold |
-
-### Machine Learning (8)
-| Strategy | Description |
-|----------|-------------|
-| ML LogReg | Logistic Regression with walk-forward training |
-| ML RF | Random Forest |
-| ML XGB | XGBoost Gradient Boosting |
-| ML KNN | K-Nearest Neighbors |
-| ML SVM | Support Vector Machine |
-| ML NB | Gaussian Naive Bayes |
-| ML AdaBoost | AdaBoost with decision stumps |
-| ML Extra Trees | Extremely Randomized Trees |
-
-### Adaptive (3)
-| Strategy | Description |
-|----------|-------------|
-| Ensemble | Multi-strategy voting |
-| Stacked | Strategy + momentum filter overlay |
-| **Regime Aware** | Auto-detects market state (trend/choppy/crisis) and switches sub-strategy |
-
-## Regime-Aware Strategy
-
-The flagship strategy detects market conditions using 4 indicators (ADX, volatility ratio, MA alignment, momentum) and dynamically switches:
-
-| Market State | Strategy Action |
-|-------------|----------------|
-| Trend + Bullish | Full position with volatility scaling |
-| Choppy + Bullish | Full position (catches non-trend up moves) |
-| Trend + Bearish | Cash or short (configurable) |
-| Crisis | Reduced position with low vol target |
-| Neutral choppy | Cash |
-
-Plus a fast-exit circuit breaker that cuts positions when N-day return drops below threshold.
-
-## Python API
-
-```python
-from momentum_lab import download_data, backtest, evaluate, get_strategy, run_search
-
-# Run full search
-results = run_search("GLD", quick=True)
-print(f"Best strategy: {results['best']['strategy']}")
-print(f"Best params: {results['best']['params']}")
-
-# Robustness check result (overfitting detection)
-rob = results.get("robustness") or {}
-if rob.get("grade"):
-    print(f"Grade: {rob['grade']} ({rob.get('verdict', 'n/a')})")
-    print(f"Baseline val Sharpe: {rob['baseline']:.4f}")
-    stats = rob.get("stats") or {}
-    if stats:
-        print(f"Neighbor median: {stats['median']:.4f}")
-
-# Or test a single strategy
-from momentum_lab.data import prepare_data
-data, df = prepare_data("SPY")
-strategy = get_strategy("regime_aware")
-positions = strategy.run(data, adx_trend_threshold=15, mom_lookback=63,
-                          vol_target_normal=0.12, position_size=2.0)
-result = backtest(positions, df["close"])
-metrics = evaluate(result["returns"])
-print(f"Sharpe: {metrics['sharpe']}")
-```
-
-## CLI Options
-
-```
-momentum-lab TICKER [OPTIONS]
-
-Arguments:
-  TICKER              Yahoo Finance ticker (GLD, SPY, BTC-USD, AAPL, ...)
-
-Options:
-  --quick             Quick mode: 5 params per strategy
-  --config PATH       Load a complete JSON search config (config wins)
-  --resume            Resume the selected run-id from all_results.csv
-  --strategies STR    Comma-separated strategy names
-  --workers N         Parallel workers (default: 1)
-  --cost BPS          Transaction cost in basis points (default: 1.0)
-  --slippage BPS      Additional slippage in basis points (default: 0)
-  --financing-rate R  Annual financing rate as a decimal (default: 0)
-  --borrow-bps BPS    Annual short borrow fee in basis points (default: 0)
-  --annualization N   Periods per year (252 stocks, 365 crypto)
-  --risk-free-rate R  Annual risk-free rate as a decimal (default: 0.04)
-  --start DATE        Data start date (default: 2004-01-01)
-  --end DATE          Data end date (default: today)
-  --refresh           Ignore cached data and re-download from Yahoo
-  --top N             Number of top results (default: 50)
-  --result-dir DIR    Parent directory for run artifacts (default: ./experiments)
-  --run-id ID         Custom run directory name (default: auto-generated)
-  --no-keep-all       Stream results to CSV without retaining them in memory
-                      (recommended for full grids: ~1 GB+ RAM otherwise)
-  --robust            Run robustness check on best params (default: True)
-  --no-robust         Skip the robustness check
-  --robust-frac F     Perturbation fraction (default: 0.2)
-  --list              List all strategies and exit
-  --version           Show version
-```
-
-## Robustness Check
-
-The search can end up on a lucky parameter spike that won't generalize. After finding
-the best strategy, momentum-lab perturbs every numeric parameter by +/-20% (integers by
-+/-1) and re-evaluates Validation Sharpe for each neighbor:
-
-- **Grade A (Robust)**: neighbors stay close to the optimum — a wide plateau
-- **Grade B**: moderately stable
-- **Grade C**: fragile — the result depends heavily on exact parameters
-- **Grade D / isolated peak**: the optimum is a spike; treat the result as overfit
-
-If you see *ISOLATED PEAK - likely overfit*, lower your expectations for live trading
-and consider constraining the search space.
-
-## Installation
-
-### From source
 ```bash
 git clone https://github.com/nmj94/momentum-lab.git
 cd momentum-lab
 pip install -e .
+
+# Default: 5 representative configurations for each non-ML strategy,
+# streamed to disk without retaining the full result set in RAM.
+momentum-lab GLD
+
+# Search a chosen set
+momentum-lab SPY --strategies tsmom,ma_cross,rsi,regime_aware
+
+# Full non-ML grid (159,668 experiments; explicitly opt in)
+momentum-lab GLD --exhaustive --workers 4
 ```
 
-> **macOS note:** the optional XGBoost-based strategies require `libomp`
-> (`brew install libomp`). Without it, `ml_xgb` experiments fail gracefully
-> and all other strategies work normally.
+Machine-learning strategies are experimental and no longer run or install by
+default:
 
-### Requirements
-- Python 3.10+
-- A Yahoo Finance-accessible ticker (stocks, ETFs, crypto, indices)
+```bash
+# scikit-learn strategies
+pip install -e ".[ml]"
+momentum-lab SPY --strategies ml_logreg,ml_rf
 
-## Output
+# XGBoost strategy
+pip install -e ".[xgb]"
+momentum-lab SPY --strategies ml_xgb
 
-After running, results are saved to `experiments/<run_id>/`; each run is isolated:
-- `run_config.json` - Data range, cost model, parameters, split configuration, Git SHA, and data snapshot hash
-- `all_results.csv` - Every experiment with train/val/test metrics; also the resume checkpoint
-- `top_results.csv` - Top N strategies by validation Sharpe
-- `robustness.csv` - Robustness check summary for the best strategy
-- Console output shows the best strategy with parameters and test set performance
+# All 26 strategies; exhaustive ML grids can take days
+momentum-lab SPY --all-strategies
+momentum-lab SPY --all-strategies --exhaustive --workers 8
+```
 
-## Example Results (GLD)
+The future PyPI distribution name is `momentum-research-lab`; the Python import
+and CLI remain `momentum_lab` and `momentum-lab`.
 
-Produced by a full exhaustive search over all 18 non-ML strategies (952,824
-experiments, data 2004-11-18 ~ 2026-08-14). The buy & hold benchmark is
-charged the same one-shot entry cost as the strategies:
+## What changed in v0.5
 
-| Strategy | Val Sharpe | Test Sharpe | Test CAGR | Test MaxDD |
-|----------|-----------|------------|-----------|------------|
-| TSMOM (best by val) | 1.29 | 0.27 | 7.9% | -38.3% |
-| Acceleration | 1.28 | -0.07 | 0.8% | -32.1% |
-| RSI | 1.23 | 0.48 | 13.8% | -35.8% |
-| Buy & Hold | - | 0.86 | 20.4% | -26.4% |
+- Safe defaults: quick, non-ML, streamed results.
+- Risk sizing is no longer optimized as an alpha parameter.
+- Every backtest enforces a final portfolio leverage cap.
+- Cash earns an explicit cash rate; financing applies only to exposure above 1x.
+- Crypto annualization is inferred as 365; other daily assets default to 252.
+- User-facing end dates are inclusive even though yfinance uses an exclusive end.
+- Yahoo downloads retry with bounded exponential backoff.
+- Cache files live in the operating system's user cache directory and are
+  written atomically.
+- Checkpoints use a fixed schema and resume only when data, strategy set,
+  search mode, package/schema version, Git revision, costs, and risk settings
+  match.
+- XGBoost and scikit-learn are optional dependencies.
+- The old “robustness grade” is described accurately as local parameter
+  sensitivity; it is not a multiple-testing correction.
 
-The best-by-validation pick (TSMOM) earned robustness grade B (stable
-neighborhood, no isolated peak) but underperformed buy & hold on the test
-window - a strong gold bull market in which a long-only filtered strategy
-lags. Val-to-test degradation of this size is normal and is exactly why the
-tool reports the untouched test set separately.
+## Research flow
 
-## Disclaimer
+```text
+Ticker + versioned run configuration
+        -> adjusted daily OHLCV data
+        -> non-overlapping train / validation / test periods
+        -> strategy and parameter evaluation
+        -> ranking by validation Sharpe
+        -> one test-window report for the selected result
+        -> local parameter-sensitivity analysis
+        -> checkpoint, summary, benchmark, and run manifest
+```
 
-This is a research tool, not investment advice. Historical backtests do not guarantee future returns. Always do your own research and consider transaction costs, slippage, and taxes before trading.
+The current train/validation/test flow is a baseline, not the final research
+methodology. Nested walk-forward validation, Deflated Sharpe Ratio, and
+Probability of Backtest Overfitting are planned before a 1.0 release.
+
+## Strategies
+
+### Classic momentum (15)
+
+| Strategy | Description |
+|---|---|
+| TSMOM | Time-series momentum |
+| MA Cross | SMA/EMA/WMA/DEMA crossover |
+| MACD | Crossover, histogram, and zero-filter modes |
+| RSI | Momentum and reversal modes |
+| ROC | Rate-of-change momentum |
+| Bollinger | Breakout and mean-reversion modes |
+| Donchian | Persistent channel breakout with exit channel |
+| Dual Momentum | Single-asset absolute momentum |
+| Triple MA | Three-moving-average alignment |
+| Vol Scale | Momentum with volatility-scaled exposure |
+| Acceleration | Short-vs-long return acceleration |
+| Z-Score | Stateful momentum/reversion |
+| Heikin Ashi | Smoothed candle direction |
+| Supertrend | ATR-based trend rule |
+| Multi Breakout | Multi-horizon breakout vote |
+
+### Experimental ML (8)
+
+Logistic Regression, Random Forest, XGBoost, KNN, SVM, Gaussian Naive Bayes,
+AdaBoost, and Extra Trees. Walk-forward fitting purges labels that overlap the
+prediction boundary. Grid warm-up windows are at least 252 samples, and invalid
+KNN sample/neighbor combinations are rejected before execution.
+
+### Composite / regime-conditioned (3)
+
+Ensemble, Stacked, and Regime Aware.
+
+The complete v0.5 search space is 291,188 configurations: 159,668 non-ML and
+131,520 ML. Configuration count is not a measure of research quality.
+
+## Python API
+
+```python
+from momentum_lab import SearchConfig, run_search
+
+config = SearchConfig(
+    ticker="GLD",
+    strategies=["tsmom", "ma_cross", "regime_aware"],
+    quick=True,
+    risk_free_rate=0.0,
+    cash_rate=0.0,
+    financing_rate=0.05,
+    max_leverage=1.5,
+    result_dir="experiments",
+    run_id="gld-research-v1",
+    keep_all_results=False,
+)
+
+result = run_search(config=config)
+print(result["best"])
+print(result["benchmark_metrics"])
+print(result["parameter_sensitivity"])
+
+# Exact resume refuses to mix different source, data, strategy, or cost models.
+resumed = run_search(config=config, resume=True)
+print(resumed["n_skipped"], resumed["n_errors"])
+```
+
+Single-strategy use remains available:
+
+```python
+from momentum_lab import backtest, evaluate, get_strategy, prepare_data
+
+data, frame = prepare_data("BTC-USD")  # annualization inferred as 365
+positions = get_strategy("tsmom").run(data, lookback=63, threshold=0.01, long_short=False)
+simulation = backtest(
+    positions,
+    frame["close"],
+    cost_bps=2,
+    slippage_bps=3,
+    cash_rate=0.03,
+    financing_rate=0.06,
+    max_leverage=1.0,
+    annualization=365,
+)
+print(evaluate(simulation["returns"], risk_free_rate=0.03, annualization=365))
+```
+
+## CLI options
+
+```text
+momentum-lab TICKER [OPTIONS]
+
+  --quick                 Five representative configs per strategy (default)
+  --exhaustive            Full parameter grid; explicitly opt in
+  --strategies NAMES      Comma-separated strategies (default: non-ML)
+  --all-strategies        Include experimental ML strategies
+  --config PATH           Load a complete JSON SearchConfig
+  --resume                Resume an exact run-id checkpoint
+  --workers N             Spawned worker processes (default: 1)
+  --cost BPS              Linear transaction cost (default: 1)
+  --slippage BPS          Additional linear slippage (default: 0)
+  --cash-rate RATE        Annual cash return (default: 0)
+  --financing-rate RATE   Annual rate on exposure above 1x (default: 0)
+  --borrow-bps BPS        Annual short borrow fee (default: 0)
+  --max-leverage X        Final absolute exposure cap (default: 2)
+  --annualization N       Override inferred 252/365 periods per year
+  --risk-free-rate RATE   Metric hurdle rate (default: 0)
+  --start DATE            Data start date (default: 2004-01-01)
+  --end DATE              Inclusive data end date (default: current history)
+  --refresh               Ignore cached market data
+  --top N                 Top result count (default: 50)
+  --result-dir DIR        Run artifact parent (default: ./experiments)
+  --run-id ID             Stable run directory name
+  --keep-all              Retain all results in RAM (default: stream to disk)
+  --robust / --no-robust  Enable/disable local parameter sensitivity
+  --robust-frac F         Local perturbation fraction (default: 0.2)
+  --list                  List strategies and full-grid counts
+  --version               Show version
+```
+
+## Outputs
+
+Each run is isolated under `experiments/<run_id>/`:
+
+- `run_config.json`: package/schema/Git version, source and data hashes, periods,
+  strategies, execution costs, and risk assumptions.
+- `all_results.csv`: fixed-schema, incremental checkpoint.
+- `top_results.csv`: top validation-ranked configurations.
+- `robustness.csv`: local parameter-sensitivity summary when enabled.
+- `summary.json`: selected result, buy-and-hold benchmark, sensitivity output,
+  result/error counts, and resume statistics.
+
+## Methodological limitations
+
+- The current selector still ranks a large family on one validation window.
+- Local parameter sensitivity does not correct for multiple testing.
+- Close-derived signals assume execution compatible with the following
+  close-to-close return; exact MOC/next-open modeling is not yet available.
+- The cost model is linear and does not model spread, market impact, capacity,
+  halts, borrow availability, or taxes.
+- yfinance is suitable for personal research, not an authorized commercial
+  market-data redistribution layer.
+
+Do not use a result for capital allocation without independent validation,
+realistic execution assumptions, and forward/paper testing.
+
+## Development
+
+```bash
+uv sync --all-extras
+uv run ruff check .
+uv run pytest -m "not network" -q
+```
+
+CI tests Python 3.10—3.13, builds and installs the wheel in a clean environment,
+and enforces a coverage floor. Scheduled network tests and release automation
+remain on the roadmap.
 
 ## License
 

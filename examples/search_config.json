@@ -3,6 +3,9 @@
   "strategies": ["tsmom", "ma_cross"],
   "quick": true,
   "robust": false,
+  "risk_free_rate": 0.0,
+  "cash_rate": 0.0,
+  "max_leverage": 1.5,
   "result_dir": "experiments",
   "run_id": "gld-p1-example",
   "keep_all_results": false

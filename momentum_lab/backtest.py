@@ -7,7 +7,7 @@ uses previous-day positions to compute current-day returns (no look-ahead bias).
 import numpy as np
 import pandas as pd
 
-RISK_FREE_RATE: float = 0.04
+RISK_FREE_RATE: float = 0.0
 
 
 def backtest(
@@ -21,6 +21,7 @@ def backtest(
     financing_rate: float = 0.0,
     borrow_bps: float = 0.0,
     slippage_bps: float = 0.0,
+    cash_rate: float = 0.0,
 ) -> dict:
     """Run a vectorized backtest.
 
@@ -30,21 +31,26 @@ def backtest(
         cost_bps: Transaction cost in basis points per unit traded.
         vol_target: If not None, scale positions to target annualized volatility.
         vol_lookback: Lookback for volatility calculation.
-        max_leverage: Maximum leverage cap.
+        max_leverage: Final absolute exposure cap, applied to every strategy.
         annualization: Number of return periods per year (252 for trading days,
             365 for continuously traded daily assets).
-        financing_rate: Annual financing rate applied to held exposure, as a
-            decimal (for example, 0.05 for 5%).
+        financing_rate: Annual financing rate applied to absolute exposure
+            above 1x, as a decimal (for example, 0.05 for 5%).
         borrow_bps: Annualized borrow fee for short exposure, in basis points.
         slippage_bps: Additional transaction slippage in basis points.
+        cash_rate: Annual return earned by uninvested cash, as a decimal.
 
     Returns:
         dict with 'returns', 'equity', 'trades' keys.
     """
     if annualization <= 0:
         raise ValueError("annualization must be positive")
+    if max_leverage <= 0:
+        raise ValueError("max_leverage must be positive")
     if any(v < 0 for v in (cost_bps, borrow_bps, slippage_bps, financing_rate)):
         raise ValueError("cost, financing and slippage parameters cannot be negative")
+    if not np.isfinite(cash_rate):
+        raise ValueError("cash_rate must be finite")
 
     if prices.empty:
         empty = prices.astype(float).copy()
@@ -53,6 +59,8 @@ def backtest(
         raise ValueError("prices must be finite and positive")
 
     positions = positions.reindex(prices.index).ffill().fillna(0)
+    if not np.isfinite(positions.to_numpy(dtype=float)).all():
+        raise ValueError("positions must be finite")
     returns = prices.pct_change().fillna(0)
 
     if vol_target is not None:
@@ -61,20 +69,28 @@ def backtest(
         # the warm-up as NaN contaminates trades, returns, and cumulative equity.
         scaling = (vol_target / (realized_vol + 1e-10)).fillna(0.0)
         positions = positions * scaling
-        positions = positions.clip(-max_leverage, max_leverage)
+
+    # Strategy-level sizing can be composed (for example internal vol scaling
+    # followed by ``position_size``).  Enforce the portfolio risk limit after
+    # every transformation so a nominal 2x cap can never become 4x.
+    positions = positions.clip(-max_leverage, max_leverage)
 
     trades = positions.diff().abs()
     trades.iloc[0] = abs(positions.iloc[0])
     cost = trades * ((cost_bps + slippage_bps) / 10000.0)
 
     held_positions = positions.shift(1).fillna(0)
-    financing = held_positions.abs() * (financing_rate / annualization)
+    cash_exposure = (1.0 - held_positions.abs()).clip(lower=0.0)
+    borrowed_exposure = (held_positions.abs() - 1.0).clip(lower=0.0)
+    cash_return = cash_exposure * (cash_rate / annualization)
+    cash_return.iloc[0] = 0.0  # no elapsed holding interval exists on the first bar
+    financing = borrowed_exposure * (financing_rate / annualization)
     borrow = held_positions.clip(upper=0).abs() * (borrow_bps / 10000.0 / annualization)
 
     # Fill the first price return before subtracting costs so an initial
     # position incurs its entry cost on the first bar instead of being
     # accidentally erased by a later fillna(0).
-    strategy_returns = held_positions * returns - cost - financing - borrow
+    strategy_returns = held_positions * returns + cash_return - cost - financing - borrow
 
     equity = (1 + strategy_returns).cumprod()
 
@@ -133,7 +149,9 @@ def evaluate(
     sortino = (mean_ret * ann - risk_free_rate) / (downside_std * np.sqrt(ann) + 1e-10)
 
     equity = (1 + returns).cumprod()
-    equity_peak = equity.cummax()
+    # Anchor the peak at initial capital 1.0 so first-bar entry costs count as
+    # drawdown instead of becoming an artificially lower starting peak.
+    equity_peak = equity.cummax().clip(lower=1.0)
     drawdown = equity / equity_peak.where(equity_peak != 0) - 1
     max_dd = drawdown.min()
     if pd.isna(max_dd):
@@ -170,7 +188,9 @@ def evaluate(
     }
 
 
-def evaluate_strategy(positions: pd.Series, prices: pd.Series, risk_free_rate: float = RISK_FREE_RATE, **bt_kwargs) -> dict:
+def evaluate_strategy(
+    positions: pd.Series, prices: pd.Series, risk_free_rate: float = RISK_FREE_RATE, **bt_kwargs
+) -> dict:
     """Backtest + evaluate in one step.
 
     ``risk_free_rate`` is consumed by ``evaluate``; everything else is

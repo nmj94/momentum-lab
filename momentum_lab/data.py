@@ -2,23 +2,37 @@
 
 import os
 import re
+import time
 import warnings
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import yfinance as yf
+from platformdirs import user_cache_dir
 
-# Default to the repository-local data directory, but allow an environment
-# override: in a wheel install ``Path(__file__).parent.parent`` points at the
-# interpreter's site-packages parent, and we must not write market data there.
-DATA_DIR = Path(os.environ.get("MOMENTUM_LAB_DATA_DIR", str(Path(__file__).parent.parent / "data")))
+# Cache outside the package directory so wheel installs never try to write into
+# site-packages.  The environment override remains useful for CI and containers.
+DATA_DIR = Path(os.environ.get("MOMENTUM_LAB_DATA_DIR", user_cache_dir("momentum-lab")))
+DOWNLOAD_ATTEMPTS = 3
+DOWNLOAD_BACKOFF_SECONDS = 0.5
 
 # Yahoo tickers are alphanumeric plus a small symbol set (BRK-B, RDS.A,
 # ^GSPC, EURUSD=X).  Anything else (notably URL-significant characters such
 # as ``?``, ``&``, ``#`` or ``/``) is rejected before it reaches the request
 # URL built by yfinance.
 _TICKER_RE = re.compile(r"^[A-Za-z0-9._^=-]+$")
+_CONTINUOUS_QUOTES = ("-USD", "-EUR", "-GBP", "-JPY", "-AUD", "-CAD", "-CHF", "-BTC", "-ETH")
+
+
+def is_continuously_traded(ticker: str) -> bool:
+    """Return whether a Yahoo ticker is a continuously traded crypto pair."""
+    return str(ticker).upper().endswith(_CONTINUOUS_QUOTES)
+
+
+def infer_annualization(ticker: str) -> float:
+    """Infer daily return periods per year from the asset's trading calendar."""
+    return 365.0 if is_continuously_traded(ticker) else 252.0
 
 
 def _load_cache(cache_path):
@@ -41,38 +55,50 @@ def _slice_range(df, start, end):
     return df.loc[mask]
 
 
-def _range_boundaries(start, end):
-    """Business-day adjusted [start, end] boundaries for coverage checks."""
+def _range_boundaries(start, end, continuous=False):
+    """Calendar-adjusted inclusive boundaries for cache coverage checks."""
     start_ts = pd.Timestamp(start)
-    # Yahoo's ``end`` bound is exclusive and market data is not published on
-    # weekends.  Compare against the nearest business-day boundaries while
-    # still slicing the user-facing result inclusively.
-    start_boundary = start_ts + pd.offsets.BDay(1) if start_ts.weekday() >= 5 else start_ts
+    start_boundary = start_ts if continuous else pd.offsets.BDay().rollforward(start_ts)
     now = pd.Timestamp.now().normalize()
     end_ts = pd.Timestamp(end) if end else now
     # A future ``end`` can never be covered by any download; cap it at today
     # instead of failing on the maximal available history.
     end_ts = min(end_ts, now)
-    # Open-ended or near-current requests get one extra business day of
+    # Open-ended or near-current requests get two sessions of
     # slack: providers emit a NaN placeholder row for the still-live
     # session, so the newest complete bar can lag "now" by two sessions
-    # depending on timezone.  Explicitly historical ends stay strict.
+    # depending on timezone. Explicitly historical ends stay strict and are
+    # inclusive, matching this module's public contract.
     open_ended = end is None or pd.Timestamp(end).normalize() >= now - pd.Timedelta(days=2)
-    slack = pd.offsets.BDay(2) if open_ended else pd.offsets.BDay(1)
-    return start_boundary, end_ts - slack
+    if open_ended:
+        slack = pd.Timedelta(days=2) if continuous else pd.offsets.BDay(2)
+        end_boundary = end_ts - slack
+    else:
+        end_boundary = end_ts if continuous else pd.offsets.BDay().rollback(end_ts)
+    return start_boundary, end_boundary
 
 
-def _cache_covers_range(df, start, end):
+def _cache_covers_range(df, start, end, continuous=False):
     """Return whether a cached frame fully covers the requested date range."""
     if df is None or df.empty:
         return False
-    start_boundary, end_boundary = _range_boundaries(start, end)
+    start_boundary, end_boundary = _range_boundaries(start, end, continuous=continuous)
     # Allow a small start gap for exchange holidays that are not represented
     # by pandas' generic business-day offset, but never accept a truncated end.
     tolerance = pd.Timedelta(days=7)
     if df.index.min() > start_boundary + tolerance:
         return False
     return df.index.max() >= end_boundary
+
+
+def _write_cache_atomic(df, cache_path):
+    """Write a cache snapshot atomically so interruption cannot truncate it."""
+    tmp_path = cache_path.with_name(f".{cache_path.name}.{os.getpid()}.tmp")
+    try:
+        df.to_csv(tmp_path)
+        tmp_path.replace(cache_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
 
 def download_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True):
@@ -100,27 +126,42 @@ def download_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True):
     if not _TICKER_RE.match(ticker):
         raise ValueError(f"Invalid ticker {ticker!r}: only letters, digits and '.', '_', '^', '=', '-' are allowed.")
 
-    DATA_DIR.mkdir(exist_ok=True)
+    continuous = is_continuously_traded(ticker)
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
     safe_ticker = "".join(char if char.isalnum() or char in "._-" else "_" for char in ticker)
     cache_path = DATA_DIR / f"{safe_ticker}_daily.csv"
 
     cached = _load_cache(cache_path) if use_cache and cache_path.exists() else None
-    if cached is not None and _cache_covers_range(cached, start, end):
+    if cached is not None and _cache_covers_range(cached, start, end, continuous=continuous):
         return _slice_range(cached, start, end)
     # A partial cache must not be returned silently.  Refresh the requested
     # window and merge it with the existing cache after a successful download.
 
-    try:
-        df = yf.download(ticker, start=start, end=end, auto_adjust=True, progress=False)
-    except Exception as e:
+    # yfinance defines ``end`` as exclusive while this API promises an
+    # inclusive [start, end] range. Ask the provider for one extra calendar day.
+    provider_end = str((end_ts + pd.Timedelta(days=1)).date()) if end_ts is not None else None
+    df = None
+    last_error = None
+    for attempt in range(DOWNLOAD_ATTEMPTS):
+        try:
+            candidate = yf.download(ticker, start=start, end=provider_end, auto_adjust=True, progress=False)
+            if candidate is not None and not candidate.empty:
+                df = candidate
+                break
+        except Exception as exc:
+            last_error = exc
+        if attempt + 1 < DOWNLOAD_ATTEMPTS:
+            time.sleep(DOWNLOAD_BACKOFF_SECONDS * (2**attempt))
+
+    if df is None and last_error is not None:
         # Temporary failure (e.g. Yahoo rate limit). Fall back to cached data.
-        if cached is not None and _cache_covers_range(cached, start, end):
-            warnings.warn(f"Download failed ({e}); falling back to cached data.", RuntimeWarning)
+        if cached is not None and _cache_covers_range(cached, start, end, continuous=continuous):
+            warnings.warn(f"Download failed ({last_error}); falling back to cached data.", RuntimeWarning)
             return _slice_range(cached, start, end)
-        raise
+        raise last_error
 
     if df is None or df.empty:
-        if cached is not None and _cache_covers_range(cached, start, end):
+        if cached is not None and _cache_covers_range(cached, start, end, continuous=continuous):
             warnings.warn("Download returned no data; falling back to cached data.", RuntimeWarning)
             return _slice_range(cached, start, end)
         raise ValueError(
@@ -159,7 +200,7 @@ def download_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True):
     # BTC-USD 2014) and we cannot distinguish that from a provider gap
     # locally, so downgrade it to a warning.  Validate BEFORE persisting so
     # a rejected window never contaminates the cache.
-    start_boundary, end_boundary = _range_boundaries(start, end)
+    start_boundary, end_boundary = _range_boundaries(start, end, continuous=continuous)
     if df.index.max() < end_boundary:
         raise ValueError(f"Downloaded data for '{ticker}' does not cover the requested range.")
     if df.index.min() > start_boundary + pd.Timedelta(days=7):
@@ -170,7 +211,7 @@ def download_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True):
         )
 
     if use_cache:
-        df.to_csv(cache_path)
+        _write_cache_atomic(df, cache_path)
 
     return _slice_range(df, start, end)
 
@@ -255,7 +296,7 @@ def compute_features(df, annualization=252.0):
     return feats
 
 
-def prepare_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True, annualization=252.0):
+def prepare_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True, annualization=None):
     """Download data + compute features, return unified data dict.
 
     Args:
@@ -263,14 +304,15 @@ def prepare_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True, ann
         start: Start date.
         end: End date.
         use_cache: If True, reuse the local CSV cache (default True).
-        annualization: Return periods per year. Strategies read it from the
-            data dict so volatility targeting matches the evaluation horizon
-            (252 for trading days, 365 for continuously traded assets).
+        annualization: Return periods per year. ``None`` infers 365 for common
+            Yahoo crypto pairs and 252 otherwise. Strategies read the resolved
+            value from the data dict so volatility targeting matches evaluation.
 
     Returns:
         (data_dict, df) where data_dict has keys for strategy consumption
         and df is the raw OHLCV DataFrame.
     """
+    annualization = infer_annualization(ticker) if annualization is None else annualization
     df = download_data(ticker, start=start, end=end, use_cache=use_cache)
     feats = compute_features(df, annualization=annualization)
 

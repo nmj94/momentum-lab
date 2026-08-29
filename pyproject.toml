@@ -1,7 +1,7 @@
 [project]
-name = "momentum-lab"
-version = "0.4.0"
-description = "Autonomous momentum strategy research - just provide a ticker, find the optimal strategy"
+name = "momentum-research-lab"
+version = "0.5.0"
+description = "Reproducible momentum strategy research and parameter-sensitivity evaluation"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"
@@ -15,21 +15,31 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Office/Business :: Financial :: Investment",
 ]
 dependencies = [
     "yfinance>=0.2.40",
     "pandas>=2.0",
     "numpy>=1.24",
-    "scikit-learn>=1.3",
-    "xgboost>=2.0",
+    "platformdirs>=4.0",
     "tqdm>=4.65",
 ]
 
 # Keep this extra in sync with [dependency-groups] dev below: pip installs
 # use the extra, uv uses the dependency group (PEP 735).
 [project.optional-dependencies]
-dev = ["pytest>=9.1.1", "ruff>=0.6.0", "hypothesis>=6.100"]
+ml = ["scikit-learn>=1.3"]
+xgb = ["scikit-learn>=1.3", "xgboost>=2.0"]
+all = ["scikit-learn>=1.3", "xgboost>=2.0"]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.6.0",
+    "hypothesis>=6.100",
+    "coverage>=7.0",
+    "scikit-learn>=1.3",
+    "xgboost>=2.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/nmj94/momentum-lab"
@@ -56,6 +66,9 @@ dev = [
     "pytest>=9.1.1",
     "ruff>=0.6.0",
     "hypothesis>=6.100",
+    "coverage>=7.0",
+    "scikit-learn>=1.3",
+    "xgboost>=2.0",
 ]
 
 [tool.pytest.ini_options]

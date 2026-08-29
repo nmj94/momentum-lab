@@ -1,6 +1,7 @@
 """Basic tests for momentum-lab."""
 
 import json
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -9,18 +10,18 @@ import pytest
 from momentum_lab import data as data_module
 from momentum_lab import search as search_module
 from momentum_lab.backtest import backtest, evaluate
-from momentum_lab.data import _cache_covers_range, compute_features, download_data
+from momentum_lab.data import _cache_covers_range, compute_features, download_data, infer_annualization
 from momentum_lab.search import _split_periods
-from momentum_lab.strategies import STRATEGY_REGISTRY, get_strategy
+from momentum_lab.strategies import CLASSIC_STRATEGIES, STRATEGY_REGISTRY, get_strategy
 
 
 @pytest.mark.network
 def test_download_data():
-    """Test data download (falls back to cache if the API is rate-limited)."""
+    """Test data download; report provider unavailability as an explicit skip."""
     try:
         df = download_data("GLD", start="2024-01-01", end="2024-06-01", use_cache=True)
-    except ValueError:
-        return  # no cache + network blocked: skip, not a code bug
+    except Exception as exc:
+        pytest.skip(f"market-data provider unavailable: {exc}")
     assert len(df) > 100
     assert "close" in df.columns
     assert df["close"].iloc[0] > 0
@@ -29,10 +30,37 @@ def test_download_data():
 @pytest.mark.network
 def test_download_data_range_respected():
     """Cached data must be sliced to the requested [start, end] window."""
-    df = download_data("GLD", start="2023-01-01", end="2023-03-01", use_cache=True)
+    try:
+        df = download_data("GLD", start="2023-01-01", end="2023-03-01", use_cache=True)
+    except Exception as exc:
+        pytest.skip(f"market-data provider unavailable: {exc}")
     assert df.index[0] >= pd.Timestamp("2023-01-01")
     assert df.index[-1] <= pd.Timestamp("2023-03-01")
     assert len(df) > 0
+
+
+def test_download_data_converts_public_inclusive_end_to_provider_exclusive_end(tmp_path, monkeypatch):
+    """The public inclusive end date must be translated for yfinance."""
+    data_dir = tmp_path / "data"
+    monkeypatch.setattr(data_module, "DATA_DIR", data_dir)
+    captured = {}
+    index = pd.date_range("2024-01-02", "2024-01-04", freq="D")
+
+    def fake_download(*args, **kwargs):
+        captured.update(kwargs)
+        return _fake_yf_download(index)
+
+    monkeypatch.setattr(data_module.yf, "download", fake_download)
+    result = download_data("BTC-USD", start="2024-01-02", end="2024-01-04", use_cache=False)
+
+    assert captured["end"] == "2024-01-05"
+    assert result.index[-1] == pd.Timestamp("2024-01-04")
+
+
+def test_annualization_is_inferred_from_asset_calendar():
+    assert infer_annualization("BTC-USD") == 365.0
+    assert infer_annualization("ETH-EUR") == 365.0
+    assert infer_annualization("BRK-B") == 252.0
 
 
 def test_download_data_rejects_reversed_date_range():
@@ -43,9 +71,7 @@ def test_download_data_rejects_reversed_date_range():
 
 def test_download_data_rejects_unsafe_ticker_characters(monkeypatch):
     """URL-significant characters must be rejected before any download attempt."""
-    monkeypatch.setattr(
-        data_module.yf, "download", lambda *a, **k: pytest.fail("download must not be attempted")
-    )
+    monkeypatch.setattr(data_module.yf, "download", lambda *a, **k: pytest.fail("download must not be attempted"))
     for bad in ["GLD?inject=1", "A&B", "../x", " ", ""]:
         with pytest.raises(ValueError, match="Invalid ticker"):
             data_module.download_data(bad, start="2024-01-02", end="2024-01-04")
@@ -252,7 +278,7 @@ def test_backtest_rejects_invalid_prices(invalid_prices):
 def test_backtest_cost_model():
     """Financing, borrow and slippage costs must reduce realized returns."""
     prices = pd.Series([100.0, 110.0, 100.0])
-    long_positions = pd.Series([1.0, 1.0, 1.0])
+    long_positions = pd.Series([2.0, 2.0, 2.0])
     short_positions = pd.Series([-1.0, -1.0, -1.0])
     long_result = backtest(
         long_positions,
@@ -264,8 +290,36 @@ def test_backtest_cost_model():
     )
     short_result = backtest(short_positions, prices, cost_bps=0.0, borrow_bps=252.0, annualization=252)
     assert long_result["returns"].iloc[0] < 0
-    assert long_result["returns"].iloc[1] < 0.1
+    assert long_result["returns"].iloc[1] < 0.2
     assert short_result["returns"].iloc[1] < -0.1
+
+
+def test_backtest_enforces_final_leverage_cap():
+    prices = pd.Series([100.0, 110.0])
+    positions = pd.Series([4.0, 4.0])
+
+    result = backtest(positions, prices, cost_bps=0.0, max_leverage=2.0)
+
+    assert result["returns"].iloc[1] == pytest.approx(0.2)
+    assert result["trades"].iloc[0] == pytest.approx(2.0)
+
+
+def test_backtest_finances_only_excess_exposure_and_credits_cash():
+    prices = pd.Series([100.0, 100.0])
+    unlevered = backtest(pd.Series([1.0, 1.0]), prices, cost_bps=0.0, financing_rate=0.252, annualization=252)
+    leveraged = backtest(pd.Series([2.0, 2.0]), prices, cost_bps=0.0, financing_rate=0.252, annualization=252)
+    half_invested = backtest(pd.Series([0.5, 0.5]), prices, cost_bps=0.0, cash_rate=0.252, annualization=252)
+
+    assert unlevered["returns"].iloc[1] == 0.0
+    assert leveraged["returns"].iloc[1] == pytest.approx(-0.001)
+    assert half_invested["returns"].iloc[0] == 0.0
+    assert half_invested["returns"].iloc[1] == pytest.approx(0.0005)
+
+
+def test_initial_entry_cost_counts_toward_max_drawdown():
+    returns = backtest(pd.Series([1.0, 1.0]), pd.Series([100.0, 100.0]), cost_bps=100.0)["returns"]
+    metrics = evaluate(returns)
+    assert metrics["max_drawdown"] == -0.01
 
 
 def test_backtest_vol_target_warmup_stays_finite():
@@ -293,7 +347,7 @@ def test_vol_scale_stays_flat_until_volatility_ready():
 
 
 def test_cache_coverage_respects_business_day_bounds():
-    idx = pd.date_range("2024-01-02", "2024-01-31", freq="B")
+    idx = pd.date_range("2024-01-02", "2024-02-01", freq="B")
     frame = pd.DataFrame({"close": 1.0}, index=idx)
     assert _cache_covers_range(frame, "2024-01-06", "2024-02-01")
     assert not _cache_covers_range(frame, "2023-12-01", "2024-02-01")
@@ -304,6 +358,13 @@ def test_cache_coverage_rejects_truncated_end():
     idx = pd.date_range("2024-01-02", "2024-01-24", freq="B")
     frame = pd.DataFrame({"close": 1.0}, index=idx)
     assert not _cache_covers_range(frame, "2024-01-01", "2024-02-01")
+
+
+def test_continuous_cache_requires_the_exact_historical_end():
+    idx = pd.date_range("2024-01-01", "2024-01-10", freq="D")
+    frame = pd.DataFrame({"close": 1.0}, index=idx)
+    assert _cache_covers_range(frame, "2024-01-01", "2024-01-10", continuous=True)
+    assert not _cache_covers_range(frame.iloc[:-1], "2024-01-01", "2024-01-10", continuous=True)
 
 
 def test_search_periods_do_not_overlap():
@@ -463,6 +524,7 @@ def test_run_search_smoke_and_artifacts(tmp_path, monkeypatch):
         robust=False,
         result_dir=tmp_path,
         run_id="smoke",
+        keep_all_results=True,
     )
 
     assert result["run_id"] == "smoke"
@@ -471,11 +533,15 @@ def test_run_search_smoke_and_artifacts(tmp_path, monkeypatch):
     assert (tmp_path / "smoke" / "run_config.json").exists()
     assert (tmp_path / "smoke" / "all_results.csv").exists()
     assert (tmp_path / "smoke" / "top_results.csv").exists()
+    assert (tmp_path / "smoke" / "summary.json").exists()
     run_config = json.loads((tmp_path / "smoke" / "run_config.json").read_text(encoding="utf-8"))
     assert len(run_config["data_snapshot"]) == 64
+    assert len(run_config["source_fingerprint"]) == 64
     assert run_config["git_sha"] != "unknown"
     evaluated = {r["strategy"] for r in result["all_results"]}
     assert evaluated == {"tsmom", "dual_momentum"}
+    assert result["benchmark_metrics"] is not None
+    assert result["n_errors"] == 0
 
 
 def test_run_search_warns_about_unknown_strategies(tmp_path, monkeypatch, capsys):
@@ -489,6 +555,7 @@ def test_run_search_warns_about_unknown_strategies(tmp_path, monkeypatch, capsys
         robust=False,
         result_dir=tmp_path,
         run_id="warn",
+        keep_all_results=True,
     )
 
     assert "WARNING: Unknown strategy 'not_a_strategy'" in capsys.readouterr().out
@@ -517,6 +584,54 @@ def test_run_search_streams_results_when_keep_all_disabled(tmp_path, monkeypatch
     assert len(result["top_results"]) == 5
     csv_rows = pd.read_csv(tmp_path / "stream" / "all_results.csv")
     assert len(csv_rows) == 5
+
+
+def test_search_checkpoint_uses_a_fixed_schema_across_batches(tmp_path):
+    """A sentinel-only first batch must not make later full rows unparsable."""
+    path = tmp_path / "all_results.csv"
+    sentinel = [
+        {
+            "strategy": "bad",
+            "params": {},
+            "train_metrics": {"sharpe": -99},
+            "val_metrics": {"sharpe": -99},
+            "test_metrics": {"sharpe": -99},
+        }
+    ]
+    full = [
+        {
+            "strategy": "ok",
+            "params": {},
+            "train_metrics": {"sharpe": 1.0, "cagr": 0.1},
+            "val_metrics": {"sharpe": 1.0, "cagr": 0.1},
+            "test_metrics": {"sharpe": 1.0, "cagr": 0.1},
+        }
+    ]
+
+    search_module._append_results_csv(sentinel, path, write_header=True)
+    search_module._append_results_csv(full, path, write_header=False)
+    restored = search_module._load_checkpoint(path)
+
+    assert len(restored) == 2
+    assert restored[1]["test_metrics"]["cagr"] == 0.1
+
+
+def test_json_summary_sanitizes_nonfinite_metrics():
+    """Run summaries must remain standards-compliant JSON for NaN metrics."""
+    value = search_module._jsonable({"skew": np.nan, "score": np.float64(np.inf)})
+
+    assert value == {"skew": None, "score": None}
+    json.dumps(value, allow_nan=False)
+
+
+def test_safe_search_defaults_exclude_ml_and_bound_memory():
+    from momentum_lab.config import SearchConfig
+
+    config = SearchConfig()
+    assert config.quick is True
+    assert config.keep_all_results is False
+    assert config.risk_free_rate == 0.0
+    assert all(not name.startswith("ml_") for name in CLASSIC_STRATEGIES)
 
 
 def test_run_search_records_risk_free_rate(tmp_path, monkeypatch):
@@ -555,6 +670,15 @@ def test_search_config_roundtrip_and_unknown_field(tmp_path):
         SearchConfig.from_mapping({"tickre": "SPY"})
 
 
+def test_distribution_name_does_not_collide_and_heavy_ml_is_optional():
+    pyproject = (Path(__file__).parents[1] / "pyproject.toml").read_text(encoding="utf-8")
+    core_project = pyproject.split("[project.optional-dependencies]", maxsplit=1)[0].lower()
+    assert 'name = "momentum-research-lab"' in core_project
+    assert "scikit-learn" not in core_project
+    assert "xgboost" not in core_project
+    assert 'xgb = ["scikit-learn>=1.3", "xgboost>=2.0"]' in pyproject
+
+
 def test_run_search_resume_skips_completed_combinations(tmp_path, monkeypatch):
     """A resumed run must load the checkpoint without re-running old combos."""
     _monkeypatch_market_data(monkeypatch)
@@ -565,6 +689,7 @@ def test_run_search_resume_skips_completed_combinations(tmp_path, monkeypatch):
         "robust": False,
         "result_dir": str(tmp_path),
         "run_id": "resume",
+        "keep_all_results": True,
     }
     first = search_module.run_search(config=config)
     assert first["n_results"] == 5
@@ -632,6 +757,24 @@ def test_run_search_resume_rejects_mismatched_config(tmp_path, monkeypatch):
     changed = dict(config, cost_bps=5.0)
     with pytest.raises(ValueError, match="resume configuration mismatch"):
         search_module.run_search(config=changed, resume=True)
+
+
+def test_run_search_resume_rejects_changed_source_revision(tmp_path, monkeypatch):
+    """A checkpoint produced by different strategy code must never be mixed."""
+    _monkeypatch_market_data(monkeypatch)
+    config = {
+        "ticker": "FAKE",
+        "strategies": ["tsmom"],
+        "quick": True,
+        "robust": False,
+        "result_dir": str(tmp_path),
+        "run_id": "resume-source-guard",
+    }
+    search_module.run_search(config=config)
+    monkeypatch.setattr(search_module, "_git_revision", lambda: "different-source-revision")
+
+    with pytest.raises(ValueError, match="git_sha"):
+        search_module.run_search(config=config, resume=True)
 
 
 def test_run_search_rerun_backs_up_previous_checkpoint(tmp_path, monkeypatch):
@@ -715,6 +858,19 @@ def test_cli_passes_new_options(monkeypatch):
     assert captured["result_dir"] == "/tmp/ml-out"
     assert captured["run_id"] == "myrun"
     assert captured["keep_all_results"] is False
+
+
+def test_cli_requires_explicit_opt_in_for_exhaustive_ml_search(monkeypatch):
+    from momentum_lab import cli
+
+    captured = {}
+    monkeypatch.setattr(cli, "run_search", lambda **kwargs: captured.update(kwargs))
+    monkeypatch.setattr("sys.argv", ["momentum-lab", "GLD", "--exhaustive", "--all-strategies"])
+
+    cli.main()
+
+    assert captured["quick"] is False
+    assert captured["strategies"] == list(STRATEGY_REGISTRY)
 
 
 def test_quick_sample_spreads_across_the_grid():
@@ -803,6 +959,14 @@ def test_parameter_constraints_remove_incoherent_grids():
     assert all(p["fast"] < p["slow"] for p in ma_combos)
     assert all(p["fast"] < p["medium"] < p["slow"] for p in triple_combos)
     assert all(p["short_lb"] < p["long_lb"] for p in accel_combos)
+
+
+def test_knn_grid_respects_initial_purged_training_size():
+    for params in get_strategy("ml_knn").iter_param_combinations():
+        available = params["lookback"] - params["forward"]
+        while available < 2:
+            available += 21
+        assert params["n_neighbors"] <= available
 
 
 def test_zscore_holds_positions_until_exit_threshold():
@@ -971,11 +1135,7 @@ def test_regime_aware_uses_crisis_target_for_bullish_regime(monkeypatch):
     crisis = (daily_returns.rolling(5).std() / (daily_returns.rolling(63).std() + 1e-10)) > 2.0
     moving_average_fast = close.rolling(50).mean()
     moving_average_slow = close.rolling(200).mean()
-    bullish = (
-        (close > moving_average_fast)
-        & (moving_average_fast > moving_average_slow)
-        & (close.pct_change(21) > 0)
-    )
+    bullish = (close > moving_average_fast) & (moving_average_fast > moving_average_slow) & (close.pct_change(21) > 0)
     mask = crisis & bullish
 
     assert mask.any()
