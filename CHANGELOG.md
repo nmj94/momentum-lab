@@ -3,6 +3,31 @@
 All notable changes are documented here. The project follows semantic versioning
 for its public Python API and run/checkpoint schema.
 
+## [0.7.0] - 2026-08-29
+
+### Market realism
+
+- Added quoted bid/ask spread, nonlinear participation-based impact, bar-volume
+  capacity limits with partial fills, starting NAV, and per-rebalance minimum
+  fees. Legacy cost behavior remains the default until these inputs are enabled.
+- Added time-varying cash, financing, financing-spread, borrow-fee, and
+  collateral-rebate schedules to the Python backtest API. Schedules are
+  forward-filled from known observations only.
+- Added dated borrow-availability controls. Unavailable borrow blocks new short
+  targets and requests an orderly cover, subject to the same liquidity limit.
+- Exposed requested versus filled turnover, actual filled positions,
+  transaction costs, participation, capacity constraints, and borrow blocks in
+  backtest output. Search selection now measures actual filled exposure.
+
+### Research outputs
+
+- Added self-contained `report.md` and `report.html` files with validation,
+  sealed-test and benchmark evidence, selection diagnostics, parameter
+  sensitivity, and complete execution assumptions.
+- Added CLI and `SearchConfig` controls for the new execution model, and locked
+  every result-affecting field into resume compatibility.
+- Advanced the accounting engine schema to 4 and package version to 0.7.0.
+
 ## [0.6.0] - 2026-08-29
 
 ### Research integrity

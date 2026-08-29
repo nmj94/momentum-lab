@@ -54,6 +54,21 @@ momentum-lab SPY --all-strategies --exhaustive --workers 8
 The future PyPI distribution name is `momentum-research-lab`; the Python import
 and CLI remain `momentum_lab` and `momentum-lab`.
 
+## What changed in v0.7
+
+- Backtests can enforce bar-volume participation limits and gradually fill
+  capacity-constrained orders instead of assuming unlimited liquidity.
+- The execution model supports quoted bid/ask spread, nonlinear
+  participation-based impact, starting NAV, and minimum currency fees.
+- Cash, financing, financing-spread, borrow-fee, collateral-rebate, and borrow
+  availability inputs can be dated pandas Series. Values are forward-filled
+  from information already known; future observations are never backfilled.
+- Backtest output exposes requested and filled turnover, actual filled
+  positions, transaction costs, participation, capacity constraints, and
+  borrow blocks. Search metrics use the actual filled path.
+- Every completed search writes portable `report.md` and self-contained
+  `report.html` evidence reports in addition to machine-readable artifacts.
+
 ## What changed in v0.6
 
 - Candidate workers receive only train/validation boundaries. Test metrics are
@@ -124,7 +139,7 @@ KNN sample/neighbor combinations are rejected before execution.
 
 Ensemble, Stacked, and Regime Aware.
 
-The complete v0.6 search space is 291,188 configurations: 159,668 non-ML and
+The complete v0.7 search space is 291,188 configurations: 159,668 non-ML and
 131,520 ML. Configuration count is not a measure of research quality.
 
 ## Python API
@@ -139,6 +154,12 @@ config = SearchConfig(
     risk_free_rate=0.0,
     cash_rate=0.0,
     financing_rate=0.05,
+    financing_spread=0.01,
+    spread_bps=4.0,
+    impact_bps=2.0,
+    max_participation=0.05,
+    initial_capital=1_000_000,
+    min_fee=0.50,
     max_leverage=1.5,
     execution_model="next_close",
     validation_folds=4,
@@ -162,6 +183,8 @@ print(resumed["n_skipped"], resumed["n_errors"])
 Single-strategy use remains available:
 
 ```python
+import pandas as pd
+
 from momentum_lab import backtest, evaluate, get_strategy, prepare_data
 
 data, frame = prepare_data("BTC-USD")  # annualization inferred as 365
@@ -169,16 +192,35 @@ positions = get_strategy("tsmom").run(data, lookback=63, threshold=0.01, long_sh
 simulation = backtest(
     positions,
     frame["close"],
+    volume=frame["volume"],
     cost_bps=2,
     slippage_bps=3,
+    spread_bps=4,
+    impact_bps=2,
+    impact_reference_participation=0.01,
+    max_participation=0.05,
+    initial_capital=1_000_000,
+    min_fee=0.50,
     cash_rate=0.03,
     financing_rate=0.06,
+    financing_spread=0.01,
     short_rebate_rate=0.01,
     max_leverage=1.0,
     execution_lag=1,
     annualization=365,
 )
 print(evaluate(simulation["returns"], risk_free_rate=0.03, annualization=365))
+print(simulation["capacity_constrained"].sum(), "capacity-constrained bars")
+```
+
+For historical funding or borrow conditions, pass a sorted pandas Series whose
+first observation covers the first price bar. Sparse schedules are
+forward-filled only:
+
+```python
+cash_curve = pd.Series([0.01, 0.05], index=pd.to_datetime(["2020-01-01", "2022-03-17"]))
+borrow_available = pd.Series([True, False], index=pd.to_datetime(["2020-01-01", "2021-01-28"]))
+simulation = backtest(positions, frame["close"], cash_rate=cash_curve, borrow_available=borrow_available)
 ```
 
 ## CLI options
@@ -195,8 +237,17 @@ momentum-lab TICKER [OPTIONS]
   --workers N             Spawned worker processes (default: 1)
   --cost BPS              Linear transaction cost (default: 1)
   --slippage BPS          Additional linear slippage (default: 0)
+  --spread-bps BPS        Quoted full bid/ask spread (default: 0)
+  --impact-bps BPS        Impact at the reference participation rate
+  --impact-exponent X     Nonlinear participation exponent (default: 0.5)
+  --impact-reference-participation X
+                          Participation where impact is quoted (default: 0.01)
+  --max-participation X   Maximum fraction of bar dollar volume traded
+  --initial-capital N     Starting NAV for capacity/fees (default: 1,000,000)
+  --min-fee N             Minimum currency fee per rebalance (default: 0)
   --cash-rate RATE        Annual cash return (default: 0)
   --financing-rate RATE   Annual rate on exposure above 1x (default: 0)
+  --financing-spread R    Annual spread over the financing rate (default: 0)
   --borrow-bps BPS        Annual short borrow fee (default: 0)
   --short-rebate-rate R   Annual short-collateral rebate (default: 0)
   --max-leverage X        Final absolute exposure cap (default: 2)
@@ -215,6 +266,7 @@ momentum-lab TICKER [OPTIONS]
   --result-dir DIR        Run artifact parent (default: ./experiments)
   --run-id ID             Stable run directory name
   --keep-all              Retain all results in RAM (default: stream to disk)
+  --no-report             Skip Markdown/HTML report generation
   --robust / --no-robust  Enable/disable local parameter sensitivity
   --robust-frac F         Local perturbation fraction (default: 0.2)
   --list                  List strategies and full-grid counts
@@ -233,6 +285,8 @@ Each run is isolated under `experiments/<run_id>/`:
 - `robustness.csv`: local parameter-sensitivity summary when enabled.
 - `summary.json`: selected result, buy-and-hold benchmark, sensitivity output,
   result/error counts, and resume statistics.
+- `report.md` and `report.html`: portable human-readable evidence reports with
+  assumptions, diagnostics, validation, sealed test, and benchmark results.
 
 ## Methodological limitations
 
@@ -242,8 +296,12 @@ Each run is isolated under `experiments/<run_id>/`:
   still become human-level test leakage; preregistration is outside the code.
 - Local parameter sensitivity remains descriptive and is not itself a
   multiple-testing correction.
-- The cost model is linear and does not model spread, market impact, capacity,
-  halts, borrow availability, or taxes.
+- Liquidity uses aggregate bar volume and a parametric impact curve, not order
+  book replay. Queue position, intrabar path, venue fragmentation, halts, and
+  taxes remain outside the model.
+- Search configuration supports scalar market assumptions; dated rate and
+  borrow-availability schedules are currently exposed through the direct
+  Python backtest API.
 - yfinance is suitable for personal research, not an authorized commercial
   market-data redistribution layer.
 

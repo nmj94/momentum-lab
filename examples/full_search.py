@@ -9,6 +9,11 @@ def main():
         ticker="SPY",
         strategies=list(STRATEGY_REGISTRY),
         cost_bps=1.0,  # 1 bps transaction cost
+        spread_bps=4.0,  # quoted full spread; the model charges half per unit traded
+        impact_bps=2.0,  # impact at 1% participation
+        max_participation=0.05,  # fill at most 5% of each bar's dollar volume
+        initial_capital=1_000_000.0,
+        min_fee=0.50,
         workers=8,  # 8 parallel workers
         quick=False,  # Full parameter grid
         top_n=50,  # Keep top 50
@@ -48,7 +53,17 @@ def main():
         signal_smooth=5,
     )
 
-    result = backtest(positions, df["close"], cost_bps=1.0)
+    result = backtest(
+        positions,
+        df["close"],
+        volume=df["volume"],
+        cost_bps=1.0,
+        spread_bps=4.0,
+        impact_bps=2.0,
+        max_participation=0.05,
+        initial_capital=1_000_000.0,
+        min_fee=0.50,
+    )
     metrics = evaluate(result["returns"])
     print("\nRegime Aware Strategy:")
     print(f"  Sharpe:  {metrics['sharpe']}")

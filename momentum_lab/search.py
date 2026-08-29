@@ -29,6 +29,7 @@ from ._version import __version__
 from .backtest import RISK_FREE_RATE, backtest, evaluate, get_buy_and_hold
 from .config import load_search_config
 from .data import infer_annualization, prepare_data
+from .reporting import render_html_report, render_markdown_report
 from .robustness import robustness_check
 from .strategies import CLASSIC_STRATEGIES, STRATEGY_REGISTRY, get_strategy
 
@@ -41,7 +42,7 @@ except ImportError:
 
 
 RESULT_DIR = Path("experiments")
-ENGINE_SCHEMA_VERSION = 3
+ENGINE_SCHEMA_VERSION = 4
 METRIC_KEYS = (
     "sharpe",
     "sortino",
@@ -58,6 +59,12 @@ METRIC_KEYS = (
     "trade_count",
     "exposure",
     "turnover",
+    "requested_turnover",
+    "fill_ratio",
+    "transaction_cost_drag",
+    "max_participation",
+    "capacity_constrained_bars",
+    "borrow_blocked_bars",
 )
 RESULT_COLUMNS = [
     "strategy",
@@ -451,9 +458,17 @@ _RESUME_COMPAT_FIELDS = (
     "cost_bps",
     "slippage_bps",
     "financing_rate",
+    "financing_spread",
     "borrow_bps",
     "cash_rate",
     "short_rebate_rate",
+    "spread_bps",
+    "impact_bps",
+    "impact_exponent",
+    "impact_reference_participation",
+    "max_participation",
+    "initial_capital",
+    "min_fee",
     "max_leverage",
     "execution_model",
     "execution_lag",
@@ -570,14 +585,27 @@ def _quick_sample(strategy, k=5):
 def _period_metrics(bt, effective_positions, start, end, risk_free_rate, annualization):
     period_returns = bt["returns"].loc[start:end]
     period_trades = bt["trades"].loc[start:end]
+    requested_trades = bt.get("requested_trades", bt["trades"]).loc[start:end]
+    transaction_costs = bt.get("transaction_costs", bt["trades"] * 0.0).loc[start:end]
+    participation = bt.get("participation", bt["trades"] * 0.0).loc[start:end]
+    capacity_constrained = bt.get("capacity_constrained", bt["trades"] > np.inf).loc[start:end]
+    borrow_blocked = bt.get("borrow_blocked", bt["trades"] > np.inf).loc[start:end]
     period_exposure = effective_positions.loc[start:end]
+    actual_turnover = float(period_trades.sum())
+    requested_turnover = float(requested_trades.sum())
     metrics = evaluate(period_returns, risk_free_rate=risk_free_rate, annualization=annualization)
     metrics.update(
         {
             "n_observations": len(period_returns),
             "trade_count": int((period_trades > 1e-12).sum()),
             "exposure": float(period_exposure.abs().mean()) if len(period_exposure) else 0.0,
-            "turnover": float(period_trades.sum()),
+            "turnover": actual_turnover,
+            "requested_turnover": requested_turnover,
+            "fill_ratio": actual_turnover / requested_turnover if requested_turnover > 1e-12 else 1.0,
+            "transaction_cost_drag": float(transaction_costs.sum()),
+            "max_participation": float(participation.max()) if len(participation) else 0.0,
+            "capacity_constrained_bars": int(capacity_constrained.sum()),
+            "borrow_blocked_bars": int(borrow_blocked.sum()),
         }
     )
     if metrics["exposure"] <= 1e-12:
@@ -671,11 +699,10 @@ def run_single_experiment(
     period_errors = []
     try:
         bt = backtest(positions, prices, cost_bps=cost_bps, **backtest_kwargs)
-        execution_lag = int(backtest_kwargs.get("execution_lag", 0))
-        effective_positions = positions.reindex(prices.index).ffill().fillna(0.0).shift(execution_lag + 1).fillna(0.0)
-        effective_positions = effective_positions.clip(
-            -backtest_kwargs.get("max_leverage", 2.0), backtest_kwargs.get("max_leverage", 2.0)
-        )
+        # ``bt['positions']`` contains the actually filled end-of-bar weight,
+        # including partial fills and borrow blocks. Returns on a bar are earned
+        # by the position held at the previous bar close.
+        effective_positions = bt["positions"].shift(1).fillna(0.0)
     except Exception as exc:
         return {
             **results,
@@ -882,9 +909,17 @@ def run_search(
     cost_bps=1.0,
     slippage_bps=0.0,
     financing_rate=0.0,
+    financing_spread=0.0,
     borrow_bps=0.0,
     cash_rate=0.0,
     short_rebate_rate=0.0,
+    spread_bps=0.0,
+    impact_bps=0.0,
+    impact_exponent=0.5,
+    impact_reference_participation=0.01,
+    max_participation=None,
+    initial_capital=1_000_000.0,
+    min_fee=0.0,
     max_leverage=2.0,
     execution_model="next_close",
     execution_lag=1,
@@ -905,6 +940,7 @@ def run_search(
     result_dir=None,
     run_id=None,
     keep_all_results=False,
+    generate_report=True,
     config=None,
     resume=False,
 ):
@@ -916,9 +952,17 @@ def run_search(
         cost_bps: Transaction cost in basis points.
         slippage_bps: Additional transaction slippage in basis points.
         financing_rate: Annual financing rate applied to exposure above 1x.
+        financing_spread: Annual spread added to the financing base rate.
         borrow_bps: Annualized short borrow fee in basis points.
         cash_rate: Annual return earned by uninvested cash.
         short_rebate_rate: Annual rebate earned on short-sale collateral.
+        spread_bps: Quoted full bid/ask spread; each unit traded pays half.
+        impact_bps: One-way market impact at the reference participation rate.
+        impact_exponent: Positive participation exponent for nonlinear impact.
+        impact_reference_participation: Participation rate at which impact is quoted.
+        max_participation: Optional maximum fraction of bar dollar volume traded.
+        initial_capital: Starting NAV used by capacity and minimum-fee models.
+        min_fee: Minimum currency fee charged per non-zero rebalance.
         max_leverage: Final absolute exposure cap applied by the backtest.
         execution_model: ``same_close``, ``next_close`` (default),
             ``next_open``, or ``delayed_close``.
@@ -948,6 +992,7 @@ def run_search(
             commit results to SQLite and export ``all_results.csv`` without
             retaining every result in memory. ``all_results`` is then empty and
             ``n_results`` carries the experiment count.
+        generate_report: Write self-contained Markdown and HTML research reports.
         config: Optional :class:`SearchConfig`, mapping, or JSON path.  When
             provided, its fields are used as the complete search configuration.
         resume: If True, reuse the transactional SQLite journal for the explicit
@@ -964,9 +1009,17 @@ def run_search(
         cost_bps = configured["cost_bps"]
         slippage_bps = configured["slippage_bps"]
         financing_rate = configured["financing_rate"]
+        financing_spread = configured["financing_spread"]
         borrow_bps = configured["borrow_bps"]
         cash_rate = configured["cash_rate"]
         short_rebate_rate = configured["short_rebate_rate"]
+        spread_bps = configured["spread_bps"]
+        impact_bps = configured["impact_bps"]
+        impact_exponent = configured["impact_exponent"]
+        impact_reference_participation = configured["impact_reference_participation"]
+        max_participation = configured["max_participation"]
+        initial_capital = configured["initial_capital"]
+        min_fee = configured["min_fee"]
         max_leverage = configured["max_leverage"]
         execution_model = configured["execution_model"]
         execution_lag = configured["execution_lag"]
@@ -987,18 +1040,45 @@ def run_search(
         result_dir = configured["result_dir"]
         run_id = configured["run_id"]
         keep_all_results = configured["keep_all_results"]
+        generate_report = configured["generate_report"]
 
     annualization = infer_annualization(ticker) if annualization is None else annualization
 
     # Validate up front: an invalid cost/annualization would otherwise be
     # swallowed by run_single_experiment's per-combo error handling and
     # silently turn the whole run into sentinel (-99) results.
-    if cost_bps < 0 or slippage_bps < 0 or borrow_bps < 0 or financing_rate < 0:
-        raise ValueError("cost, financing and slippage parameters cannot be negative")
-    if annualization <= 0:
+    nonnegative_inputs = (
+        cost_bps,
+        slippage_bps,
+        financing_rate,
+        financing_spread,
+        borrow_bps,
+        spread_bps,
+        impact_bps,
+        min_fee,
+    )
+    if any(isinstance(value, (bool, np.bool_)) or not np.isfinite(value) or value < 0 for value in nonnegative_inputs):
+        raise ValueError("cost, financing and slippage parameters must be finite and cannot be negative")
+    if isinstance(annualization, (bool, np.bool_)) or not np.isfinite(annualization) or annualization <= 0:
         raise ValueError("annualization must be positive")
-    if max_leverage <= 0:
+    if isinstance(max_leverage, (bool, np.bool_)) or not np.isfinite(max_leverage) or max_leverage <= 0:
         raise ValueError("max_leverage must be positive")
+    if isinstance(initial_capital, (bool, np.bool_)) or not np.isfinite(initial_capital) or initial_capital <= 0:
+        raise ValueError("initial_capital must be finite and positive")
+    if isinstance(impact_exponent, (bool, np.bool_)) or not np.isfinite(impact_exponent) or impact_exponent <= 0:
+        raise ValueError("impact_exponent must be finite and positive")
+    if (
+        isinstance(impact_reference_participation, (bool, np.bool_))
+        or not np.isfinite(impact_reference_participation)
+        or not 0 < impact_reference_participation <= 1
+    ):
+        raise ValueError("impact_reference_participation must be in (0, 1]")
+    if max_participation is not None and (
+        isinstance(max_participation, (bool, np.bool_))
+        or not np.isfinite(max_participation)
+        or not 0 < max_participation <= 1
+    ):
+        raise ValueError("max_participation must be in (0, 1]")
     if not np.isfinite(cash_rate) or not np.isfinite(short_rebate_rate) or not np.isfinite(risk_free_rate):
         raise ValueError("cash_rate, short_rebate_rate and risk_free_rate must be finite")
     if cash_rate <= -1 or short_rebate_rate <= -1:
@@ -1039,6 +1119,8 @@ def run_search(
         raise ValueError("workers must be at least 1")
     if not 0 < robust_frac <= 1:
         raise ValueError("robust_frac must be in (0, 1]")
+    if not isinstance(generate_report, (bool, np.bool_)):
+        raise TypeError("generate_report must be boolean")
     if resume and not run_id:
         raise ValueError("resume requires an explicit run_id")
 
@@ -1050,22 +1132,35 @@ def run_search(
     run_dir = base_result_dir / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    backtest_kwargs = {
+    backtest_config = {
         "annualization": annualization,
         "financing_rate": financing_rate,
+        "financing_spread": financing_spread,
         "borrow_bps": borrow_bps,
         "slippage_bps": slippage_bps,
         "cash_rate": cash_rate,
         "short_rebate_rate": short_rebate_rate,
+        "spread_bps": spread_bps,
+        "impact_bps": impact_bps,
+        "impact_exponent": impact_exponent,
+        "impact_reference_participation": impact_reference_participation,
+        "max_participation": max_participation,
+        "initial_capital": initial_capital,
+        "min_fee": min_fee,
         "max_leverage": max_leverage,
         "execution_lag": resolved_execution_lag,
     }
+    backtest_kwargs = dict(backtest_config)
     print(f"momentum-lab: Comparing strategies for {ticker}")
 
     data, df = prepare_data(ticker, start=start, end=end, use_cache=use_cache, annualization=annualization)
     if execution_price_column not in df.columns:
         raise ValueError(f"execution model {execution_model} requires the '{execution_price_column}' price column")
     prices = df[execution_price_column]
+    if impact_bps > 0 or max_participation is not None:
+        if "volume" not in df.columns:
+            raise ValueError("liquidity-aware execution requires a 'volume' column")
+        backtest_kwargs["volume"] = df["volume"]
     n = len(df)
     periods = _split_periods(df.index)
     # Workers receive no test boundary at all.  The coordinator releases it
@@ -1089,7 +1184,7 @@ def run_search(
         "ticker": ticker,
         "strategies": strategies,
         "cost_bps": cost_bps,
-        **backtest_kwargs,
+        **backtest_config,
         "execution_model": execution_model,
         "execution_price_column": execution_price_column,
         "risk_free_rate": risk_free_rate,
@@ -1118,6 +1213,7 @@ def run_search(
         "robust_frac": robust_frac,
         "use_cache": use_cache,
         "keep_all_results": keep_all_results,
+        "generate_report": generate_report,
         "resume": resume,
     }
     if resume:
@@ -1343,7 +1439,7 @@ def run_search(
         strategy = get_strategy(sname)
         positions = strategy.run(data, **params).reindex(prices.index).ffill().fillna(0.0)
         selected_bt = backtest(positions, prices, cost_bps=cost_bps, **backtest_kwargs)
-        selected_effective = positions.shift(resolved_execution_lag + 1).fillna(0.0).clip(-max_leverage, max_leverage)
+        selected_effective = selected_bt["positions"].shift(1).fillna(0.0)
         test_m = _period_metrics(
             selected_bt,
             selected_effective,
@@ -1357,7 +1453,7 @@ def run_search(
 
         benchmark_positions = get_buy_and_hold(prices)
         benchmark_bt = backtest(benchmark_positions, prices, cost_bps=cost_bps, **backtest_kwargs)
-        benchmark_effective = benchmark_positions.shift(resolved_execution_lag + 1).fillna(0.0)
+        benchmark_effective = benchmark_bt["positions"].shift(1).fillna(0.0)
         benchmark_metrics = _period_metrics(
             benchmark_bt,
             benchmark_effective,
@@ -1463,6 +1559,14 @@ def run_search(
         "n_skipped": n_skipped,
         "n_errors": n_errors,
     }
+    report_paths = {}
+    if generate_report:
+        markdown_path = run_dir / "report.md"
+        html_path = run_dir / "report.html"
+        _write_text_atomic(markdown_path, render_markdown_report(summary, metadata))
+        _write_text_atomic(html_path, render_html_report(summary, metadata))
+        report_paths = {"markdown": str(markdown_path), "html": str(html_path)}
+        summary["reports"] = {"markdown": markdown_path.name, "html": html_path.name}
     _write_text_atomic(
         run_dir / "summary.json",
         json.dumps(summary, ensure_ascii=False, indent=2, allow_nan=False),
@@ -1481,4 +1585,5 @@ def run_search(
         "n_results": n_results,
         "n_skipped": n_skipped,
         "n_errors": n_errors,
+        "reports": report_paths,
     }

@@ -1,6 +1,6 @@
 [project]
 name = "momentum-research-lab"
-version = "0.6.0"
+version = "0.7.0"
 description = "Reproducible momentum strategy research and parameter-sensitivity evaluation"
 readme = "README.md"
 license = {text = "MIT"}

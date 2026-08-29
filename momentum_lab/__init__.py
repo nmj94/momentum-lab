@@ -4,6 +4,7 @@ from ._version import __version__
 from .backtest import backtest, evaluate, evaluate_strategy
 from .config import SearchConfig, load_search_config
 from .data import MarketDataUnavailableError, download_data, prepare_data
+from .reporting import render_html_report, render_markdown_report
 from .robustness import robustness_check
 from .search import run_search
 from .strategies import (
@@ -27,6 +28,8 @@ __all__ = [
     "list_strategies",
     "load_search_config",
     "prepare_data",
+    "render_html_report",
+    "render_markdown_report",
     "robustness_check",
     "run_search",
 ]

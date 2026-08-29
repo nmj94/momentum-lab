@@ -16,3 +16,6 @@ else:
 rob = results.get("parameter_sensitivity") or {}
 if rob.get("grade"):
     print(f"Sensitivity grade: {rob['grade']} ({rob.get('verdict', 'n/a')})")
+
+for kind, path in results.get("reports", {}).items():
+    print(f"{kind.title()} report: {path}")

@@ -56,7 +56,7 @@ jobs:
           uv venv .wheel-venv
           uv pip install --python .wheel-venv/bin/python dist/*.whl
           .wheel-venv/bin/momentum-lab --version
-          .wheel-venv/bin/python -c "import momentum_lab; assert momentum_lab.__version__ == '0.6.0'"
+          .wheel-venv/bin/python -c "import momentum_lab; assert momentum_lab.__version__ == '0.7.0'"
 
   network-test:
     if: github.event_name == 'schedule'

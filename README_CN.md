@@ -45,6 +45,14 @@ momentum-lab SPY --all-strategies --exhaustive --workers 8
 
 未来发布使用的 distribution name 为 `momentum-research-lab`；Python import 和命令行名称仍为 `momentum_lab` 与 `momentum-lab`。
 
+## v0.7 功能升级
+
+- 回测可限制单根 K 线成交量参与率；容量不足时按 bar 逐步部分成交，不再默认流动性无限。
+- 成交模型新增完整买卖价差、基于参与率的非线性市场冲击、初始资金规模和单次最低手续费。
+- 现金、融资、融资利差、借券费、抵押品返息及借券可用性可使用带日期的 pandas Series；稀疏数据只使用已知历史值前向填充，不会回填未来信息。
+- 回测结果新增目标换手、实际换手、实际成交持仓、交易成本、参与率、容量受限和借券受限序列；搜索指标以实际成交路径为准。
+- 每次完成的搜索除机器可读文件外，还会自动生成便携的 `report.md` 和自包含 `report.html` 研究报告。
+
 ## v0.6 主要修复
 
 - 搜索进程只获得训练和验证边界；全部候选与 Top 文件不再包含测试指标，完成选型后才对复制出的最终候选评估一次测试期。
@@ -101,7 +109,7 @@ momentum-lab SPY --all-strategies --exhaustive --workers 8
 
 Ensemble、Stacked 和 Regime Aware。
 
-v0.6 完整空间为 291,188 个组合，其中非 ML 159,668 个、ML 131,520 个。组合数量不是研究质量指标。
+v0.7 完整空间为 291,188 个组合，其中非 ML 159,668 个、ML 131,520 个。组合数量不是研究质量指标。
 
 ## Python API
 
@@ -115,6 +123,12 @@ config = SearchConfig(
     risk_free_rate=0.0,
     cash_rate=0.0,
     financing_rate=0.05,
+    financing_spread=0.01,
+    spread_bps=4.0,
+    impact_bps=2.0,
+    max_participation=0.05,
+    initial_capital=1_000_000,
+    min_fee=0.50,
     max_leverage=1.5,
     execution_model="next_close",
     validation_folds=4,
@@ -137,6 +151,8 @@ print(resumed["n_skipped"], resumed["n_errors"])
 单策略接口仍然可用：
 
 ```python
+import pandas as pd
+
 from momentum_lab import backtest, evaluate, get_strategy, prepare_data
 
 data, frame = prepare_data("BTC-USD")  # 自动使用 365 年化
@@ -144,16 +160,33 @@ positions = get_strategy("tsmom").run(data, lookback=63, threshold=0.01, long_sh
 simulation = backtest(
     positions,
     frame["close"],
+    volume=frame["volume"],
     cost_bps=2,
     slippage_bps=3,
+    spread_bps=4,
+    impact_bps=2,
+    impact_reference_participation=0.01,
+    max_participation=0.05,
+    initial_capital=1_000_000,
+    min_fee=0.50,
     cash_rate=0.03,
     financing_rate=0.06,
+    financing_spread=0.01,
     short_rebate_rate=0.01,
     max_leverage=1.0,
     execution_lag=1,
     annualization=365,
 )
 print(evaluate(simulation["returns"], risk_free_rate=0.03, annualization=365))
+print(simulation["capacity_constrained"].sum(), "个容量受限 bar")
+```
+
+如果需要使用历史资金或借券条件，可以传入有序 pandas Series。首个观测必须覆盖首根价格 bar，后续稀疏数据只会前向填充：
+
+```python
+cash_curve = pd.Series([0.01, 0.05], index=pd.to_datetime(["2020-01-01", "2022-03-17"]))
+borrow_available = pd.Series([True, False], index=pd.to_datetime(["2020-01-01", "2021-01-28"]))
+simulation = backtest(positions, frame["close"], cash_rate=cash_curve, borrow_available=borrow_available)
 ```
 
 ## 命令行参数
@@ -170,8 +203,17 @@ momentum-lab TICKER [选项]
   --workers N             并行进程数（默认 1）
   --cost BPS              线性交易成本（默认 1）
   --slippage BPS          额外线性滑点（默认 0）
+  --spread-bps BPS        完整买卖价差（默认 0）
+  --impact-bps BPS        参考参与率下的市场冲击
+  --impact-exponent X     非线性冲击指数（默认 0.5）
+  --impact-reference-participation X
+                          冲击报价对应的参与率（默认 0.01）
+  --max-participation X   单 bar 最大成交量参与率
+  --initial-capital N     用于容量和最低费的初始净值（默认 1,000,000）
+  --min-fee N             每次再平衡的最低货币手续费（默认 0）
   --cash-rate RATE        年化现金收益（默认 0）
   --financing-rate RATE   超过 1 倍敞口的融资利率（默认 0）
+  --financing-spread R    融资基准利率之上的年化利差（默认 0）
   --borrow-bps BPS        年化做空借券费（默认 0）
   --short-rebate-rate R   年化做空抵押品返息（默认 0）
   --max-leverage X        最终绝对敞口上限（默认 2）
@@ -190,6 +232,7 @@ momentum-lab TICKER [选项]
   --result-dir DIR        运行产物父目录
   --run-id ID             稳定运行目录名
   --keep-all              在内存保留全部结果（默认流式写盘）
+  --no-report             不生成 Markdown/HTML 报告
   --robust / --no-robust  开关局部参数敏感性分析
   --robust-frac F         局部扰动比例（默认 0.2）
   --list                  列出策略和完整网格数量
@@ -206,13 +249,15 @@ momentum-lab TICKER [选项]
 - `top_results.csv`：按验证证据排序的候选，不含测试指标。
 - `robustness.csv`：启用时输出局部参数敏感性摘要。
 - `summary.json`：选定结果、买入持有基准、敏感性结果、实验数、错误数和续跑统计。
+- `report.md` 与 `report.html`：包含假设、诊断、验证期、封存测试期及基准结果的便携研究报告。
 
 ## 当前方法局限
 
 - Deflated Sharpe 使用偏保守的独立试验近似；基于时间折的 CSCV/PBO 只能作为诊断，不能证明没有过拟合。
 - 如果不断新建 run-id 并反复观察最终测试报告，人为层面仍会形成测试集泄漏；代码不能替代研究预注册制度。
 - 局部参数敏感性仍是描述性指标，本身不能校正多重检验。
-- 线性成本模型尚未覆盖买卖价差、市场冲击、容量、停牌、借券可得性和税费。
+- 流动性模型使用 bar 级汇总成交量和参数化冲击曲线，不是订单簿回放；排队位置、bar 内路径、场所分散、停牌和税费仍未覆盖。
+- 搜索配置目前使用标量市场假设；带日期的利率及借券可用性序列通过直接 Python 回测 API 提供。
 - yfinance 适合个人研究，不能直接作为商业数据再分发层。
 
 在独立验证、现实成交假设和 forward/paper testing 完成前，不应将结果直接用于真实资金配置。

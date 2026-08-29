@@ -61,8 +61,7 @@ def _val_sharpe(
         kwargs = dict(backtest_kwargs or {})
         full = backtest(positions, prices, cost_bps=cost_bps, **kwargs)
         val_returns = full["returns"].loc[periods["val"][0] : periods["val"][1]]
-        lag = int(kwargs.get("execution_lag", 0))
-        held = positions.reindex(prices.index).ffill().fillna(0.0).shift(lag + 1).fillna(0.0)
+        held = full["positions"].shift(1).fillna(0.0)
         val_held = held.loc[periods["val"][0] : periods["val"][1]]
         if len(val_returns) == 0 or val_held.abs().sum() == 0:
             return -99.0

@@ -5,8 +5,18 @@
   "robust": false,
   "risk_free_rate": 0.0,
   "cash_rate": 0.0,
+  "financing_rate": 0.04,
+  "financing_spread": 0.01,
+  "spread_bps": 4.0,
+  "impact_bps": 2.0,
+  "impact_exponent": 0.5,
+  "impact_reference_participation": 0.01,
+  "max_participation": 0.05,
+  "initial_capital": 1000000.0,
+  "min_fee": 0.5,
   "max_leverage": 1.5,
   "result_dir": "experiments",
   "run_id": "gld-p1-example",
-  "keep_all_results": false
+  "keep_all_results": false,
+  "generate_report": true
 }

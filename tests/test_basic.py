@@ -289,7 +289,17 @@ def test_backtest():
 def test_backtest_empty_prices_returns_empty_result():
     empty = pd.Series(dtype=float, index=pd.DatetimeIndex([]))
     result = backtest(empty, empty)
-    assert set(result) == {"returns", "equity", "trades"}
+    assert set(result) == {
+        "returns",
+        "equity",
+        "trades",
+        "requested_trades",
+        "positions",
+        "transaction_costs",
+        "participation",
+        "capacity_constrained",
+        "borrow_blocked",
+    }
     assert all(series.empty for series in result.values())
 
 
@@ -402,6 +412,114 @@ def test_backtest_short_cash_and_collateral_are_explicit():
     assert result["returns"].iloc[1] == pytest.approx(0.0015)
 
 
+def test_backtest_forward_fills_time_varying_rate_schedules_without_lookahead():
+    index = pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-04"])
+    prices = pd.Series(100.0, index=index)
+    positions = pd.Series(0.0, index=index)
+    cash_schedule = pd.Series([0.365, 0.73], index=pd.to_datetime(["2024-01-01", "2024-01-03"]))
+
+    result = backtest(positions, prices, cost_bps=0.0, cash_rate=cash_schedule)
+
+    assert result["returns"].iloc[1] == pytest.approx(0.365 / 365.25)
+    assert result["returns"].iloc[2] == pytest.approx(0.73 * 2 / 365.25)
+
+
+def test_backtest_adds_time_varying_financing_spread():
+    index = pd.date_range("2024-01-01", periods=3, freq="D")
+    prices = pd.Series(100.0, index=index)
+    positions = pd.Series(2.0, index=index)
+    spread = pd.Series([0.02, 0.04], index=[index[0], index[2]])
+
+    result = backtest(
+        positions,
+        prices,
+        cost_bps=0.0,
+        financing_rate=0.05,
+        financing_spread=spread,
+        max_leverage=2.0,
+    )
+
+    assert result["returns"].iloc[1] == pytest.approx(-0.07 / 365.25)
+    assert result["returns"].iloc[2] == pytest.approx(-0.09 / 365.25)
+
+
+def test_backtest_borrow_unavailability_blocks_and_covers_shorts():
+    index = pd.date_range("2024-01-01", periods=4, freq="D")
+    prices = pd.Series(100.0, index=index)
+    positions = pd.Series(-1.0, index=index)
+    available = pd.Series([True, False], index=[index[0], index[1]])
+
+    result = backtest(positions, prices, cost_bps=0.0, borrow_available=available)
+
+    assert result["positions"].iloc[0] == -1.0
+    assert result["positions"].iloc[1] == 0.0
+    assert result["borrow_blocked"].iloc[1:].all()
+
+
+def test_backtest_capacity_limits_fill_and_reports_participation():
+    index = pd.date_range("2024-01-01", periods=3, freq="D")
+    prices = pd.Series(100.0, index=index)
+    volume = pd.Series(10.0, index=index)
+    positions = pd.Series(1.0, index=index)
+
+    result = backtest(
+        positions,
+        prices,
+        cost_bps=0.0,
+        volume=volume,
+        initial_capital=100_000.0,
+        max_participation=0.1,
+    )
+
+    assert result["requested_trades"].iloc[0] == 1.0
+    assert result["trades"].iloc[0] == pytest.approx(0.001)
+    assert result["positions"].iloc[1] == pytest.approx(0.002)
+    assert result["participation"].iloc[0] == pytest.approx(0.1)
+    assert result["capacity_constrained"].all()
+
+
+def test_backtest_spread_nonlinear_impact_and_minimum_fee_are_explicit():
+    index = pd.date_range("2024-01-01", periods=2, freq="D")
+    prices = pd.Series(100.0, index=index)
+    volume = pd.Series(10_000.0, index=index)
+    positions = pd.Series(1.0, index=index)
+
+    liquid = backtest(
+        positions,
+        prices,
+        cost_bps=0.0,
+        spread_bps=20.0,
+        impact_bps=10.0,
+        impact_exponent=0.5,
+        impact_reference_participation=0.01,
+        volume=volume,
+        initial_capital=1_000_000.0,
+    )
+    minimum = backtest(
+        pd.Series(0.001, index=index),
+        prices,
+        cost_bps=1.0,
+        initial_capital=1_000.0,
+        min_fee=2.0,
+    )
+
+    # A 100% participation order pays 100 bps impact plus a 10 bps half-spread.
+    assert liquid["transaction_costs"].iloc[0] == pytest.approx(0.011)
+    assert liquid["returns"].iloc[0] == pytest.approx(-0.011)
+    assert minimum["transaction_costs"].iloc[0] == pytest.approx(0.002)
+
+
+def test_backtest_liquidity_model_requires_volume_and_schedule_coverage():
+    index = pd.date_range("2024-01-01", periods=2, freq="D")
+    prices = pd.Series(100.0, index=index)
+    positions = pd.Series(1.0, index=index)
+
+    with pytest.raises(ValueError, match="volume is required"):
+        backtest(positions, prices, impact_bps=1.0)
+    with pytest.raises(ValueError, match="cover the first price bar"):
+        backtest(positions, prices, cash_rate=pd.Series([0.05], index=[index[1]]))
+
+
 def test_initial_entry_cost_counts_toward_max_drawdown():
     returns = backtest(pd.Series([1.0, 1.0]), pd.Series([100.0, 100.0]), cost_bps=100.0)["returns"]
     metrics = evaluate(returns)
@@ -478,7 +596,7 @@ def test_run_search_rejects_parent_directory_run_id(tmp_path, monkeypatch):
 
 def _monkeypatch_market_data(monkeypatch, n=600):
     data = _mk_data(n)
-    df = pd.DataFrame({"close": data["close"]})
+    df = pd.DataFrame({"close": data["close"], "volume": data["volume"]})
     monkeypatch.setattr(search_module, "prepare_data", lambda *a, **k: (data, df))
     return data, df
 
@@ -490,6 +608,15 @@ def _monkeypatch_market_data(monkeypatch, n=600):
         ({"slippage_bps": -0.5}, "cannot be negative"),
         ({"borrow_bps": -10}, "cannot be negative"),
         ({"financing_rate": -0.01}, "cannot be negative"),
+        ({"financing_spread": -0.01}, "cannot be negative"),
+        ({"spread_bps": -1}, "cannot be negative"),
+        ({"impact_bps": -1}, "cannot be negative"),
+        ({"impact_exponent": 0}, "impact_exponent must be"),
+        ({"impact_reference_participation": 0}, "impact_reference_participation must be"),
+        ({"max_participation": 0}, "max_participation must be"),
+        ({"max_participation": 1.1}, "max_participation must be"),
+        ({"initial_capital": 0}, "initial_capital must be"),
+        ({"min_fee": -1}, "cannot be negative"),
         ({"annualization": 0}, "annualization must be positive"),
         ({"top_n": 0}, "top_n must be at least 1"),
         ({"workers": 0}, "workers must be at least 1"),
@@ -627,6 +754,8 @@ def test_run_search_smoke_and_artifacts(tmp_path, monkeypatch):
     assert (tmp_path / "smoke" / "results.sqlite3").exists()
     assert (tmp_path / "smoke" / "top_results.csv").exists()
     assert (tmp_path / "smoke" / "summary.json").exists()
+    assert (tmp_path / "smoke" / "report.md").exists()
+    assert (tmp_path / "smoke" / "report.html").exists()
     run_config = json.loads((tmp_path / "smoke" / "run_config.json").read_text(encoding="utf-8"))
     assert len(run_config["data_snapshot"]) == 64
     assert len(run_config["source_fingerprint"]) == 64
@@ -634,6 +763,9 @@ def test_run_search_smoke_and_artifacts(tmp_path, monkeypatch):
     assert len(run_config["lock_fingerprint"]) == 64
     assert run_config["execution_lag"] == 1
     assert run_config["execution_model"] == "next_close"
+    assert run_config["spread_bps"] == 0.0
+    assert run_config["impact_bps"] == 0.0
+    assert run_config["initial_capital"] == 1_000_000.0
     assert run_config["git_sha"] != "unknown"
     evaluated = {r["strategy"] for r in result["all_results"]}
     assert evaluated == {"tsmom", "dual_momentum"}
@@ -646,6 +778,41 @@ def test_run_search_smoke_and_artifacts(tmp_path, monkeypatch):
     assert not any(column.startswith("test_") for column in top_columns)
     summary = json.loads((tmp_path / "smoke" / "summary.json").read_text(encoding="utf-8"))
     assert "test_metrics" in summary["best"]
+    assert summary["reports"] == {"markdown": "report.md", "html": "report.html"}
+    markdown = (tmp_path / "smoke" / "report.md").read_text(encoding="utf-8")
+    html = (tmp_path / "smoke" / "report.html").read_text(encoding="utf-8")
+    assert "Sealed test" in markdown
+    assert "Execution and financing assumptions" in markdown
+    assert "<!doctype html>" in html
+
+
+def test_run_search_threads_liquidity_assumptions_into_accounting_and_manifest(tmp_path, monkeypatch):
+    _monkeypatch_market_data(monkeypatch)
+
+    result = search_module.run_search(
+        ticker="FAKE",
+        strategies=["tsmom"],
+        quick=True,
+        robust=False,
+        result_dir=tmp_path,
+        run_id="liquidity",
+        spread_bps=4.0,
+        impact_bps=2.0,
+        max_participation=0.5,
+        initial_capital=1_000.0,
+        min_fee=0.01,
+        min_validation_trades=0,
+        min_validation_exposure=0.0,
+    )
+
+    manifest = json.loads((tmp_path / "liquidity" / "run_config.json").read_text(encoding="utf-8"))
+    assert result["n_errors"] == 0
+    assert 0.0 <= result["best"]["val_metrics"]["fill_ratio"] <= 1.0
+    assert result["best"]["val_metrics"]["max_participation"] <= 0.5 + 1e-12
+    assert manifest["spread_bps"] == 4.0
+    assert manifest["impact_bps"] == 2.0
+    assert manifest["max_participation"] == 0.5
+    assert manifest["min_fee"] == 0.01
 
 
 def test_run_search_warns_about_unknown_strategies(tmp_path, monkeypatch, capsys):
@@ -688,6 +855,24 @@ def test_run_search_streams_results_when_keep_all_disabled(tmp_path, monkeypatch
     assert len(result["top_results"]) == 5
     csv_rows = pd.read_csv(tmp_path / "stream" / "all_results.csv")
     assert len(csv_rows) == 5
+
+
+def test_run_search_can_disable_human_reports(tmp_path, monkeypatch):
+    _monkeypatch_market_data(monkeypatch)
+
+    result = search_module.run_search(
+        ticker="FAKE",
+        strategies=["tsmom"],
+        quick=True,
+        robust=False,
+        result_dir=tmp_path,
+        run_id="no-report",
+        generate_report=False,
+    )
+
+    assert result["reports"] == {}
+    assert not (tmp_path / "no-report" / "report.md").exists()
+    assert not (tmp_path / "no-report" / "report.html").exists()
 
 
 def test_run_search_parallel_workers_share_execution_contract(tmp_path, monkeypatch):
@@ -749,6 +934,24 @@ def test_json_summary_sanitizes_nonfinite_metrics():
     json.dumps(value, allow_nan=False)
 
 
+def test_html_report_escapes_strategy_and_parameter_content():
+    from momentum_lab.reporting import render_html_report
+
+    summary = {
+        "run_id": "safe",
+        "best": {"strategy": "<script>alert(1)</script>", "params": {"label": "<b>unsafe</b>"}},
+        "benchmark_metrics": {},
+        "selection_diagnostics": {},
+        "n_results": 1,
+        "n_errors": 0,
+    }
+    rendered = render_html_report(summary, {"ticker": "SAFE", "package_version": "test"})
+
+    assert "<script>alert(1)</script>" not in rendered
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in rendered
+    assert "&lt;b&gt;unsafe&lt;/b&gt;" in rendered
+
+
 def test_deflated_sharpe_penalizes_multiple_testing_hurdle():
     metrics = {"sharpe": 1.5, "n_observations": 252, "skew": 0.0, "kurtosis": 0.0}
 
@@ -806,13 +1009,16 @@ def test_search_config_roundtrip_and_unknown_field(tmp_path):
 
     path = tmp_path / "search.json"
     path.write_text(
-        '{"ticker": "SPY", "strategies": "tsmom, rsi", "quick": true, "run_id": "p1"}',
+        '{"ticker": "SPY", "strategies": "tsmom, rsi", "quick": true, "run_id": "p1", '
+        '"spread_bps": 4.0, "max_participation": 0.05}',
         encoding="utf-8",
     )
     config = load_search_config(path)
     assert config.ticker == "SPY"
     assert config.strategies == ["tsmom", "rsi"]
     assert config.to_dict()["run_id"] == "p1"
+    assert config.spread_bps == 4.0
+    assert config.max_participation == 0.05
 
     with pytest.raises(ValueError, match="unknown search config field"):
         SearchConfig.from_mapping({"tickre": "SPY"})
@@ -905,6 +1111,10 @@ def test_run_search_resume_rejects_mismatched_config(tmp_path, monkeypatch):
     changed = dict(config, cost_bps=5.0)
     with pytest.raises(ValueError, match="resume configuration mismatch"):
         search_module.run_search(config=changed, resume=True)
+
+    changed_execution = dict(config, spread_bps=4.0)
+    with pytest.raises(ValueError, match="spread_bps"):
+        search_module.run_search(config=changed_execution, resume=True)
 
 
 def test_run_search_resume_rejects_changed_source_fingerprint(tmp_path, monkeypatch):
@@ -1127,20 +1337,37 @@ def test_cli_passes_new_options(monkeypatch):
             "--no-robust",
             "--risk-free-rate",
             "0.05",
+            "--spread-bps",
+            "4",
+            "--impact-bps",
+            "2",
+            "--max-participation",
+            "0.05",
+            "--initial-capital",
+            "250000",
+            "--min-fee",
+            "1.5",
             "--result-dir",
             "/tmp/ml-out",
             "--run-id",
             "myrun",
             "--no-keep-all",
+            "--no-report",
         ],
     )
 
     cli.main()
 
     assert captured["risk_free_rate"] == 0.05
+    assert captured["spread_bps"] == 4.0
+    assert captured["impact_bps"] == 2.0
+    assert captured["max_participation"] == 0.05
+    assert captured["initial_capital"] == 250_000.0
+    assert captured["min_fee"] == 1.5
     assert captured["result_dir"] == "/tmp/ml-out"
     assert captured["run_id"] == "myrun"
     assert captured["keep_all_results"] is False
+    assert captured["generate_report"] is False
 
 
 def test_cli_requires_explicit_opt_in_for_exhaustive_ml_search(monkeypatch):

@@ -35,15 +35,22 @@ evidence, explicit assumptions, and repeatability.
 - Strict OHLC data contracts, reusable late-listing cache metadata, and weekly
   provider-contract CI.
 
-## v0.7 — Market realism and scale
+## v0.7 — Market realism and scale (in progress)
 
-- Time-varying cash rates, financing spreads, and borrow availability.
-- Spread, nonlinear impact, liquidity, capacity, and minimum-fee models.
+Delivered in v0.7.0:
+
+- Time-varying cash, financing, borrow-fee and rebate schedules; financing
+  spreads; and dated borrow availability in the Python API.
+- Spread, nonlinear participation impact, bar-volume capacity, partial fills,
+  and minimum-fee models, wired through search configuration and CLI defaults.
+- Automated self-contained HTML and Markdown research reports.
+
+Remaining v0.7 work:
+
 - Feature and indicator DAG caching beyond the v0.6 base-signal reuse.
 - Budgeted staged search, early stopping, successive halving, and optional Optuna.
 - Optional Parquet/DuckDB analytics exports on top of the SQLite journal.
 - Typed `StrategySpec`, `RunConfig`, `RunResult`, and plugin entry points.
-- Automated HTML/Markdown research reports.
 - Cross-asset and cross-regime frozen benchmark suites.
 - Block-bootstrap intervals and correlated effective-trial estimates.
 

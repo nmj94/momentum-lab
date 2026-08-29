@@ -21,9 +21,17 @@ class SearchConfig:
     cost_bps: float = 1.0
     slippage_bps: float = 0.0
     financing_rate: float = 0.0
+    financing_spread: float = 0.0
     borrow_bps: float = 0.0
     cash_rate: float = 0.0
     short_rebate_rate: float = 0.0
+    spread_bps: float = 0.0
+    impact_bps: float = 0.0
+    impact_exponent: float = 0.5
+    impact_reference_participation: float = 0.01
+    max_participation: float | None = None
+    initial_capital: float = 1_000_000.0
+    min_fee: float = 0.0
     max_leverage: float = 2.0
     execution_model: str = "next_close"
     execution_lag: int = 1
@@ -44,6 +52,7 @@ class SearchConfig:
     result_dir: str | None = None
     run_id: str | None = None
     keep_all_results: bool = False
+    generate_report: bool = True
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, Any]) -> "SearchConfig":
