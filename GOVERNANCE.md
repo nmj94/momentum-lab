@@ -1,10 +1,38 @@
-# Research registration and test access (v0.11+, dataset binding in v0.12)
+# Research registration and test access (v0.11+, portfolios in v0.13)
 
 The research registry prevents accidental reuse from being labelled as a new
 test. It is a **local observation ledger, not encrypted test-data custody or a
 tamper-proof preregistration service**. It cannot know whether data was inspected
 elsewhere, on another machine, before registration, or under another symbol.
 "First recorded reveal" never means "proven previously unseen data".
+
+## Portfolio whole-history acknowledgement
+
+The v0.13 `portfolio` workflow is separate from registered single-asset study
+selection. It computes a fixed rule over the entire evaluated multi-asset
+history, not a sealed portfolio test. `--acknowledge-history` (or Python
+`acknowledge_history=True`) is required on each invocation and is forbidden in
+the JSON recipe. Missing acknowledgement fails before data or registry access.
+
+After validating aligned offline datasets, **every asset's entire evaluated
+date range** is reserved as `development` in the same shared registry, before
+any score or portfolio P&L calculation. Those observations overlap later test
+claims regardless of different run IDs or data hashes. Already-sealed studies
+can consequently become `known_prior_exposure` and require reuse consent.
+Acknowledging portfolio history is not a claim that it was previously unseen.
+
+All asset reservations must finish before calculation starts. They are
+individual transactions: if a later one fails, earlier records conservatively
+remain, and the book is not computed. Calculation/export failures likewise
+retain history. There is no implicit resume or overwrite; `summary.json` is
+written last, so incomplete runs lack a completion marker. Restore failures
+with a new run ID without clearing observation history.
+
+Portfolio low-level numerical APIs, like existing single-asset backtests, do
+not manage observation records. A researcher using them is responsible for
+recording their own access; no numerical API certifies fresh OOS evidence.
+Point-in-time universe membership and multi-asset sealed protocols remain
+future work. See [PORTFOLIOS.md](PORTFOLIOS.md) for the accounting/data contract.
 
 ## Two-step research workflow
 

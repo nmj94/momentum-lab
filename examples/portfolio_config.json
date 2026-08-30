@@ -1,0 +1,22 @@
+{
+  "datasets": {
+    "SPY": "../datasets/spy-v1/manifest.json",
+    "GLD": "../datasets/gld-v1/manifest.json"
+  },
+  "lookback": 126,
+  "skip_recent": 0,
+  "top_k": 1,
+  "rebalance": "monthly",
+  "absolute_threshold": 0.0,
+  "max_weight": 0.8,
+  "initial_capital": 100000,
+  "cost_bps": 5,
+  "slippage_bps": 2,
+  "spread_bps": 4,
+  "cash_rate": 0.0,
+  "risk_free_rate": 0.0,
+  "start": "2020-01-01",
+  "end": "2025-12-31",
+  "run_id": "relative-momentum-v1",
+  "result_dir": "experiments/portfolios"
+}

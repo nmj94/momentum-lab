@@ -57,6 +57,35 @@ momentum-lab SPY --all-strategies --exhaustive --workers 8
 The future PyPI distribution name is `momentum-research-lab`; the Python import
 and CLI remain `momentum_lab` and `momentum-lab`.
 
+## What changed in v0.13
+
+- Added multi-asset cross-sectional momentum: rank relative returns, optionally
+  filter negative momentum, and choose capped top-k allocations with cash for
+  unfilled slots. Daily, weekly and monthly signals use observed history only.
+- A shared-cash, long-only portfolio book handles delayed close fills, actual
+  weight drift, paid two-sided trading costs and cash interest. It is not an
+  average of independently funded single-asset backtests.
+- Export account/holding/trade ledgers, signal and realized weights, and offline
+  HTML/Markdown reports against a matched-warm-up equal-weight buy-and-hold book.
+- This first portfolio workflow is explicitly **exploratory whole-history
+  research**, not a sealed OOS study or live trading. Invocation-only consent
+  records every asset's evaluated dates as development exposure before scoring.
+- Six independently calculated frozen portfolio ledgers supplement the
+  unchanged sixteen single-asset regressions.
+
+```bash
+# First import aligned, same-currency snapshots you may legally use.
+# Adapt the supplied example's tickers, dates, paths and cost assumptions.
+momentum-lab portfolio --config examples/portfolio_config.json --acknowledge-history
+momentum-lab portfolio benchmark
+```
+
+See [PORTFOLIOS.md](PORTFOLIOS.md) for data alignment, formulas, consent,
+Python APIs, output files and limitations. The target cap can drift between
+rebalances; cash uses effective annual ACT/365, unlike the single-asset engine's
+simple ACT/365.25 convention. Point-in-time membership, portfolio OOS selection,
+FX and live execution remain out of scope.
+
 ## What changed in v0.12
 
 - Added offline CSV snapshots with explicit source, usage terms, currency,

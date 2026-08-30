@@ -18,6 +18,10 @@ def _run_checked(parser, **kwargs):
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "portfolio":
+        from .portfolio_research import main as portfolio_main
+
+        return portfolio_main(sys.argv[2:])
     if len(sys.argv) > 1 and sys.argv[1] == "data":
         from .datasets import main as data_main
 
@@ -38,7 +42,8 @@ def main():
         "  momentum-lab SPY --quick            # Quick search S&P 500\n"
         "  momentum-lab BTC-USD --workers 4    # Search Bitcoin with 4 cores\n"
         "  momentum-lab AAPL --strategies tsmom,ma_cross,rsi\n"
-        "  momentum-lab benchmark              # Offline frozen regression suite\n",
+        "  momentum-lab benchmark              # Offline frozen regression suite\n"
+        "  momentum-lab portfolio --help       # Fixed-rule multi-asset research\n",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(

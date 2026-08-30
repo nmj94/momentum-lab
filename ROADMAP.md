@@ -124,11 +124,36 @@ Next evidence work:
 - Stable cross-provider asset identity, shared/custodial registration and
   externally verifiable prospective protocols beyond the local v1 registry.
 
+## v0.13 — Cross-sectional portfolios and shared-cash research
+
+Delivered in v0.13.0:
+
+- Offline fixed-universe, top-k relative-momentum portfolios with optional
+  absolute-momentum filtering, target caps, cash slots and daily/weekly/monthly
+  causal signals; skip-recent observations are explicitly defined.
+- One self-financing long-only book, next-close fills, paid buy/sell costs,
+  effective ACT/365 cash interest, held-unit weight drift and a matched-warm-up
+  equal-weight buy-and-hold baseline.
+- Explicit whole-history invocation consent; all asset/date exposures recorded
+  in the shared registry before scores or returns. No new sealed/OOS claim.
+- Complete CSV books, reproducibility contracts, offline HTML/Markdown reports,
+  six frozen exact-rational oracle cases and an installed-wheel lifecycle check.
+
+Remaining portfolio work, before parameter search or paper execution:
+
+- Point-in-time investable universes, listing/delisting and membership history.
+- Multi-asset registered protocols, development-only selection and controlled
+  test access across the whole universe, with selection-aware comparisons.
+- Shared-clock/provider identity validation; explicit FX and trading-calendar
+  models before combining asynchronously traded or differently priced assets.
+- Portfolio liquidity/impact/partial-fill models validated against independent
+  ledgers; the v0.13 linear-cost book does not inherit these single-asset features.
+
 ## v1.0 — Stable research platform
 
 - Stable public API and migration policy.
 - Licensed multi-provider data adapters and point-in-time metadata.
-- Portfolio and cross-sectional momentum, including true relative momentum.
+- Stable portfolio/cross-sectional APIs and the remaining controls above.
 - Pre-registered research hypotheses and controlled OOS access.
 - Reproducible public benchmarks and third-party result review.
 - Signed releases, trusted publishing, SBOM/provenance, and complete documentation.
