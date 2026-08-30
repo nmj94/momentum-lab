@@ -1199,11 +1199,6 @@ def run_search(
     min_validation_exposure=0.01,
     workers=1,
     quick=True,
-    search_method="grid",
-    candidate_budget=256,
-    halving_factor=3,
-    halving_stages=3,
-    indicator_cache_size=256,
     top_n=50,
     start="2004-01-01",
     end=None,
@@ -1216,6 +1211,11 @@ def run_search(
     generate_report=True,
     config=None,
     resume=False,
+    search_method="grid",
+    candidate_budget=256,
+    halving_factor=3,
+    halving_stages=3,
+    indicator_cache_size=256,
 ):
     """Compare momentum strategies for a ticker.
 
@@ -1843,10 +1843,9 @@ def run_search(
                         _mark_stage_survivors(store_path, sname, stage, next_candidates)
                         survivors[sname] = next_candidates
                         stage_summary["advanced_candidates"] += len(next_candidates)
-                        best_stage_score = (
-                            _stage_score(results_by_params[_canonical_params(next_candidates[0])])
-                            if next_candidates
-                            else None
+                        best_stage_score = max(
+                            (_stage_score(results_by_params[_canonical_params(params)]) for params in candidates),
+                            default=None,
                         )
                         stage_summary["strategies"].append(
                             {

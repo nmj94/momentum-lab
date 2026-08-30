@@ -986,6 +986,74 @@ def test_successive_halving_supports_spawned_workers(tmp_path, monkeypatch):
     assert result["search_diagnostics"]["total_stage_evaluations"] == 4
 
 
+def test_successive_halving_flushes_partial_stage_on_interruption(tmp_path, monkeypatch):
+    _monkeypatch_market_data(monkeypatch)
+    original = search_module.run_single_experiment
+    calls = 0
+
+    def interrupted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls > 2:
+            raise RuntimeError("stage interrupted")
+        return original(*args, **kwargs)
+
+    config = {
+        "ticker": "FAKE",
+        "strategies": ["tsmom"],
+        "search_method": "successive_halving",
+        "candidate_budget": 3,
+        "halving_stages": 2,
+        "robust": False,
+        "generate_report": False,
+        "result_dir": str(tmp_path),
+        "run_id": "halving-interrupted",
+    }
+    monkeypatch.setattr(search_module, "run_single_experiment", interrupted)
+    with pytest.raises(RuntimeError, match="stage interrupted"):
+        search_module.run_search(config=config)
+
+    assert search_module._stage_store_count(tmp_path / "halving-interrupted" / "results.sqlite3") == 2
+    assert search_module._store_counts(tmp_path / "halving-interrupted" / "results.sqlite3") == (0, 0)
+    monkeypatch.setattr(search_module, "run_single_experiment", original)
+    resumed = search_module.run_search(config=config, resume=True)
+    assert resumed["n_results"] == 1
+    assert resumed["search_diagnostics"]["resumed_stage_evaluations"] == 2
+    assert resumed["search_diagnostics"]["new_stage_evaluations"] == 2
+
+
+def test_halving_final_stage_reports_its_actual_best_score(tmp_path, monkeypatch):
+    _monkeypatch_market_data(monkeypatch)
+    calls = 0
+
+    def scored(strategy_name, params, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return {
+            "strategy": strategy_name,
+            "params": params,
+            "train_metrics": {},
+            "val_metrics": {"sharpe": float(calls), "n_observations": 240, "trade_count": 1, "exposure": 1.0},
+            "val_fold_sharpes": [float(calls)] * 4,
+        }
+
+    monkeypatch.setattr(search_module, "run_single_experiment", scored)
+    result = search_module.run_search(
+        ticker="FAKE",
+        strategies=["tsmom"],
+        search_method="successive_halving",
+        candidate_budget=3,
+        halving_stages=1,
+        robust=False,
+        generate_report=False,
+        result_dir=tmp_path,
+        run_id="halving-best-score",
+    )
+
+    stage = result["search_diagnostics"]["stages"][0]
+    assert stage["strategies"][0]["best_stage_sharpe"] == 3.0
+
+
 def test_halving_resources_and_tie_breaking_are_deterministic():
     index = pd.date_range("2024-01-01", periods=100, freq="B")
     assert _halving_resource_bars(index, stages=3, factor=3, minimum=20) == [20, 34, 100]
@@ -1132,6 +1200,19 @@ def test_safe_search_defaults_exclude_ml_and_bound_memory():
     assert config.keep_all_results is False
     assert config.risk_free_rate == 0.0
     assert all(not name.startswith("ml_") for name in CLASSIC_STRATEGIES)
+
+
+def test_new_search_options_preserve_existing_positional_api():
+    from inspect import signature
+
+    from momentum_lab.config import SearchConfig
+
+    search_params = list(signature(search_module.run_search).parameters)
+    config_params = list(signature(SearchConfig).parameters)
+    assert search_params[search_params.index("quick") + 1] == "top_n"
+    assert config_params[config_params.index("quick") + 1] == "top_n"
+    assert search_params.index("search_method") > search_params.index("resume")
+    assert config_params.index("search_method") > config_params.index("generate_report")
 
 
 def test_run_search_records_risk_free_rate(tmp_path, monkeypatch):
