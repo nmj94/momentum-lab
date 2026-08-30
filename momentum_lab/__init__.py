@@ -4,6 +4,7 @@ from ._version import __version__
 from .backtest import backtest, evaluate, evaluate_strategy
 from .config import SearchConfig, load_search_config
 from .data import MarketDataUnavailableError, download_data, prepare_data
+from .governance import RegistryError, StudyRegistry, TestReuseError
 from .indicators import IndicatorDAG
 from .reporting import render_html_report, render_markdown_report
 from .robustness import robustness_check
@@ -21,7 +22,10 @@ __all__ = [
     "IndicatorDAG",
     "MarketDataUnavailableError",
     "RegimeAware",
+    "RegistryError",
     "SearchConfig",
+    "StudyRegistry",
+    "TestReuseError",
     "__version__",
     "backtest",
     "download_data",

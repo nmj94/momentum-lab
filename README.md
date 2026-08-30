@@ -57,6 +57,38 @@ momentum-lab SPY --all-strategies --exhaustive --workers 8
 The future PyPI distribution name is `momentum-research-lab`; the Python import
 and CLI remain `momentum_lab` and `momentum-lab`.
 
+## What changed in v0.11
+
+- Added registered studies with fixed data, strategy-space and evaluation
+  protocols; `--study-id` withholds test evaluation until an explicit reveal.
+- Shared SQLite observation history follows overlapping ticker/date ranges
+  across run IDs, data revisions and result directories. Previously used
+  development periods also count; interrupted reveals are never forgotten.
+- Repeated evaluations need acknowledgement and a reason. Reopening the same
+  fixed result uses the cached reveal and logs the replay, never a new first use.
+- Reports distinguish sealed, first-recorded, previously revealed, repeated-use
+  and unknown-history evidence. Existing unregistered commands still run, but
+  now record access and explicitly warn about their history limits.
+
+```bash
+# Register and select using development data; no test metrics are computed.
+momentum-lab GLD --study-id gld-2026q3 --run-id gld-dev --end 2026-08-28
+
+# Inspect metadata, then explicitly reveal the already-frozen selection.
+momentum-lab study status gld-2026q3
+momentum-lab GLD --study-id gld-2026q3 --run-id gld-dev --end 2026-08-28 \
+  --resume --reveal-test
+
+momentum-lab study history --ticker GLD
+momentum-lab study import-legacy experiments/old-run
+```
+
+Keep one shared registry and fixed search settings. Reveal/reuse consent is
+invocation-only, never enabled by a JSON config. First **recorded** reveal is
+not proof of untouched data: external history remains unknown and local files
+are not tamper-proof custody. See [GOVERNANCE.md](GOVERNANCE.md) for reuse,
+interruption recovery, registry backups, legacy migration and Python examples.
+
 ## What changed in v0.10
 
 - Final selected strategies now receive paired block-bootstrap confidence

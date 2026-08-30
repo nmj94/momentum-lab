@@ -29,6 +29,7 @@ from ._version import __version__
 from .backtest import RISK_FREE_RATE, backtest, evaluate, get_buy_and_hold
 from .config import load_search_config
 from .data import infer_annualization, prepare_data
+from .governance import StudyRegistry, validate_study_options
 from .indicators import IndicatorDAG
 from .reporting import render_html_report, render_markdown_report
 from .robustness import robustness_check
@@ -661,6 +662,9 @@ _RESUME_COMPAT_FIELDS = (
     "bootstrap_confidence",
     "bootstrap_seed",
     "bootstrap_min_observations",
+    "study_id",
+    "registry_path",
+    "registry_id",
 )
 
 
@@ -1178,6 +1182,67 @@ def _select_from_store(
     return top, diagnostics
 
 
+def _selected_ledgers(best, data, df, execution_price_column, cost_bps, backtest_kwargs):
+    """Evaluate exactly one fixed strategy and its benchmark on the supplied window."""
+    prices = df[execution_price_column]
+    positions = get_strategy(best["strategy"]).run(data, **best.get("params", {}))
+    positions = positions.reindex(prices.index).ffill().fillna(0.0)
+    selected = backtest(positions, prices, cost_bps=cost_bps, **backtest_kwargs)
+    benchmark = backtest(get_buy_and_hold(prices), prices, cost_bps=cost_bps, **backtest_kwargs)
+    return selected, benchmark
+
+
+def _bootstrap_windows(selected, benchmark, periods, labels, options, annualization, risk_free_rate):
+    return {
+        label: paired_block_bootstrap(
+            selected["returns"].loc[periods[key][0] : periods[key][1]],
+            benchmark["returns"].loc[periods[key][0] : periods[key][1]],
+            annualization=annualization,
+            risk_free_rate=risk_free_rate,
+            **options,
+        )
+        for label, key in labels
+    }
+
+
+def _test_payload(
+    best,
+    data,
+    df,
+    periods,
+    execution_price_column,
+    cost_bps,
+    backtest_kwargs,
+    annualization,
+    risk_free_rate,
+    bootstrap_options,
+    *,
+    include_validation=False,
+):
+    """Caller must durably record exposure BEFORE passing full data here."""
+    selected, benchmark = _selected_ledgers(best, data, df, execution_price_column, cost_bps, backtest_kwargs)
+    test_metrics, benchmark_metrics = [
+        _period_metrics(
+            ledger, ledger["positions"].shift(1).fillna(0.0), *periods["test"], risk_free_rate, annualization
+        )
+        for ledger in (selected, benchmark)
+    ]
+    labels = [("validation", "val"), ("test", "test")] if include_validation else [("test", "test")]
+    diagnostics = (
+        _bootstrap_windows(selected, benchmark, periods, labels, bootstrap_options, annualization, risk_free_rate)
+        if bootstrap_options is not None
+        else {}
+    )
+    return _jsonable(
+        {
+            "test_metrics": test_metrics,
+            "benchmark_metrics": benchmark_metrics,
+            "test_evaluated_at": datetime.now(timezone.utc).isoformat(),
+            "bootstrap_periods": diagnostics,
+        }
+    )
+
+
 def run_search(
     ticker="GLD",
     strategies=None,
@@ -1229,6 +1294,11 @@ def run_search(
     bootstrap_confidence=0.95,
     bootstrap_seed=42,
     bootstrap_min_observations=60,
+    study_id=None,
+    registry_path=None,
+    reveal_test=False,
+    allow_test_reuse=False,
+    test_reuse_reason=None,
 ):
     """Compare momentum strategies for a ticker.
 
@@ -1280,6 +1350,14 @@ def run_search(
         bootstrap_seed: Reproducible PCG64 seed, chosen before inspecting results.
         bootstrap_min_observations: Minimum observations; also requires at least
             five nominal non-overlapping blocks in each reported window.
+        study_id: Fixed research protocol ID. Registered searches withhold test
+            evaluation by default; complete a sealed search before revealing.
+        registry_path: Shared SQLite observation registry, outside result dirs.
+        reveal_test: Invocation-only acknowledgement to reveal an already-frozen
+            study. Never enabled implicitly by a JSON configuration.
+        allow_test_reuse: Invocation-only acknowledgement of known overlapping
+            observations; cannot turn previously observed data into fresh data.
+        test_reuse_reason: Required audit explanation when allowing test reuse.
         top_n: Number of top results to keep.
         start: Data start date.
         end: Data end date. None = today.
@@ -1344,6 +1422,8 @@ def run_search(
         bootstrap_confidence = configured["bootstrap_confidence"]
         bootstrap_seed = configured["bootstrap_seed"]
         bootstrap_min_observations = configured["bootstrap_min_observations"]
+        study_id = configured["study_id"]
+        registry_path = configured["registry_path"]
         top_n = configured["top_n"]
         start = configured["start"]
         end = configured["end"]
@@ -1355,6 +1435,7 @@ def run_search(
         keep_all_results = configured["keep_all_results"]
         generate_report = configured["generate_report"]
 
+    validate_study_options(study_id, reveal_test, allow_test_reuse, test_reuse_reason)
     annualization = infer_annualization(ticker) if annualization is None else annualization
 
     if not isinstance(bootstrap, (bool, np.bool_)):
@@ -1474,6 +1555,21 @@ def run_search(
     if run_id in {".", ".."} or Path(run_id).name != run_id:
         raise ValueError("run_id must be a single directory name")
     run_dir = base_result_dir / run_id
+    previous_config_path = run_dir / "run_config.json"
+    if study_id and not resume and run_dir.exists() and any(run_dir.iterdir()):
+        raise ValueError("registered runs require a new empty run directory or resume=True")
+    if study_id and resume and not previous_config_path.is_file():
+        raise ValueError("registered resume requires its original run_config.json and registry")
+    if previous_config_path.is_file():
+        previous_config = json.loads(previous_config_path.read_text(encoding="utf-8"))
+        if previous_config.get("study_id") and previous_config["study_id"] != study_id:
+            raise ValueError("cannot change or disable study_id in an existing registered run")
+    registry = StudyRegistry(registry_path, create=not resume and not reveal_test)
+    if resume and previous_config_path.is_file() and previous_config.get("registry_id") != registry.registry_id:
+        raise ValueError("resume registry identity mismatch; restore the original access history")
+    if reveal_test:
+        registry.require_reveal_ready(study_id)
+    test_access = registry.unregistered_status()
     run_dir.mkdir(parents=True, exist_ok=True)
 
     backtest_config = {
@@ -1500,7 +1596,6 @@ def run_search(
     data, df = prepare_data(ticker, start=start, end=end, use_cache=use_cache, annualization=annualization)
     if execution_price_column not in df.columns:
         raise ValueError(f"execution model {execution_model} requires the '{execution_price_column}' price column")
-    prices = df[execution_price_column]
     if impact_bps > 0 or max_participation is not None:
         if "volume" not in df.columns:
             raise ValueError("liquidity-aware execution requires a 'volume' column")
@@ -1560,6 +1655,12 @@ def run_search(
         "bootstrap_confidence": float(bootstrap_confidence),
         "bootstrap_seed": int(bootstrap_seed),
         "bootstrap_min_observations": int(bootstrap_min_observations),
+        "study_id": study_id,
+        "registry_path": str(registry.path),
+        "registry_id": registry.registry_id,
+        "reveal_test": reveal_test,
+        "allow_test_reuse": allow_test_reuse,
+        "test_reuse_reason": test_reuse_reason,
         "halving_resource_bars": halving_resources,
         "top_n": top_n,
         "start": start,
@@ -1585,14 +1686,48 @@ def run_search(
     }
     if resume:
         _check_resume_compatibility(run_dir, metadata)
+    if study_id:
+        unknown = [name for name in strategies if name not in STRATEGY_REGISTRY]
+        if unknown:
+            raise ValueError(f"registered study contains unknown strategies: {', '.join(unknown)}")
+        protocol = {
+            key: metadata[key]
+            for key in _RESUME_COMPAT_FIELDS
+            if key not in {"study_id", "registry_path", "registry_id"}
+        }
+        protocol.update(
+            {
+                "periods": metadata["periods"],
+                "selection_rule": "deflated_sharpe_probability_v1",
+                "split_rule": "ordered_40_40_20_v1",
+                "strategy_space": {
+                    name: _jsonable(
+                        {"grid": get_strategy(name).param_grid, "universal": get_strategy(name).UNIVERSAL_PARAMS}
+                    )
+                    for name in strategies
+                },
+            }
+        )
+        test_access = registry.register(study_id, protocol)
+        metadata["study_protocol_sha256"] = test_access["protocol_sha256"]
     _write_text_atomic(run_dir / "run_config.json", json.dumps(metadata, ensure_ascii=False, indent=2))
     print(f"  Data: {df.index[0].date()} ~ {df.index[-1].date()}, {n} bars")
     print(f"  Train: {periods['train'][0].date()} ~ {periods['train'][1].date()}")
     print(f"  Val:   {periods['val'][0].date()} ~ {periods['val'][1].date()}")
-    print(f"  Test:  {periods['test'][0].date()} ~ {periods['test'][1].date()} [SEALED UNTIL SELECTION]")
+    test_policy = "EXPLICIT REVEAL REQUIRED" if study_id else "LEGACY AUTO-REVEAL; PRIOR HISTORY UNKNOWN"
+    print(f"  Test:  {periods['test'][0].date()} ~ {periods['test'][1].date()} [{test_policy}]")
 
     known = [s for s in strategies if s in STRATEGY_REGISTRY]
     _check_strategy_dependencies(known)
+    registry.record_development(
+        ticker=ticker,
+        start=periods["train"][0],
+        end=periods["val"][1],
+        data_snapshot=metadata["data_snapshot"],
+        run_id=run_id,
+        run_path=run_dir,
+        study_id=study_id,
+    )
     for s in strategies:
         if s not in STRATEGY_REGISTRY:
             print(f"  WARNING: Unknown strategy '{s}' skipped. Use --list to see available names.")
@@ -1961,6 +2096,7 @@ def run_search(
 
     if n_results == 0:
         print("  WARNING: No experiments completed. Check strategy names and data.")
+        test_access["status"] = "no_selection"
         return {
             "all_results": [],
             "top_results": [],
@@ -1973,6 +2109,7 @@ def run_search(
             "n_errors": n_errors,
             "benchmark_metrics": None,
             "bootstrap_diagnostics": bootstrap_diagnostics,
+            "test_access": test_access,
             "parameter_sensitivity": None,
             "search_diagnostics": halving_diagnostics,
             "indicator_cache": cache_diagnostics,
@@ -1997,7 +2134,7 @@ def run_search(
     if not keep_all_results:
         all_results = []
 
-    # Phase 3: Test set evaluation
+    # Phase 3: Freeze selection, then either remain sealed or reserve a reveal.
     benchmark_metrics = None
     if top:
         # Copy the selected candidate so neither the checkpoint nor the
@@ -2005,45 +2142,88 @@ def run_search(
         best = copy.deepcopy(top[0])
         sname = best["strategy"]
         params = best.get("params", {})
-        strategy = get_strategy(sname)
-        positions = strategy.run(data, **params).reindex(prices.index).ffill().fillna(0.0)
-        selected_bt = backtest(positions, prices, cost_bps=cost_bps, **backtest_kwargs)
-        selected_effective = selected_bt["positions"].shift(1).fillna(0.0)
-        test_m = _period_metrics(
-            selected_bt,
-            selected_effective,
-            periods["test"][0],
-            periods["test"][1],
-            risk_free_rate,
-            annualization,
-        )
-        best["test_metrics"] = test_m
-        best["test_evaluated_at"] = datetime.now(timezone.utc).isoformat()
-
-        benchmark_positions = get_buy_and_hold(prices)
-        benchmark_bt = backtest(benchmark_positions, prices, cost_bps=cost_bps, **backtest_kwargs)
-        benchmark_effective = benchmark_bt["positions"].shift(1).fillna(0.0)
-        benchmark_metrics = _period_metrics(
-            benchmark_bt,
-            benchmark_effective,
-            periods["test"][0],
-            periods["test"][1],
-            risk_free_rate,
-            annualization,
-        )
-        if bootstrap:
-            # Only the fixed final selection is diagnosed, using its existing
-            # continuous ledger. Separate windows never share resampled bars.
-            # Do not attach these results to top candidates or the journal.
-            for label, period_name in (("validation", "val"), ("test", "test")):
-                window_start, window_end = periods[period_name]
-                bootstrap_diagnostics["periods"][label] = paired_block_bootstrap(
-                    selected_bt["returns"].loc[window_start:window_end],
-                    benchmark_bt["returns"].loc[window_start:window_end],
-                    annualization=annualization,
-                    risk_free_rate=risk_free_rate,
-                    **bootstrap_options,
+        if study_id:
+            registry.bind_selection(
+                study_id,
+                _jsonable(
+                    {
+                        "strategy": sname,
+                        "params": params,
+                        "val_metrics": best["val_metrics"],
+                        "selection_diagnostics": best["selection_diagnostics"],
+                    }
+                ),
+            )
+            test_access = registry.status(study_id)
+            if bootstrap:
+                selected_dev, benchmark_dev = _selected_ledgers(
+                    best,
+                    development_data,
+                    development_df,
+                    execution_price_column,
+                    cost_bps,
+                    development_backtest_kwargs,
                 )
+                bootstrap_diagnostics["periods"].update(
+                    _bootstrap_windows(
+                        selected_dev,
+                        benchmark_dev,
+                        selection_periods,
+                        [("validation", "val")],
+                        bootstrap_options,
+                        annualization,
+                        risk_free_rate,
+                    )
+                )
+        payload = None
+        if not study_id or reveal_test:
+            claim = registry.claim_test(
+                ticker=ticker,
+                start=periods["test"][0],
+                end=periods["test"][1],
+                data_snapshot=metadata["data_snapshot"],
+                run_id=run_id,
+                run_path=run_dir,
+                study_id=study_id,
+                allow_reuse=allow_test_reuse,
+                reason=test_reuse_reason,
+            )
+            test_access.update(claim["access"])
+            if claim["cached"]:
+                payload = claim["payload"]
+            else:
+                event_id = test_access["event_id"]
+                try:
+                    payload = _test_payload(
+                        best,
+                        data,
+                        df,
+                        periods,
+                        execution_price_column,
+                        cost_bps,
+                        backtest_kwargs,
+                        annualization,
+                        risk_free_rate,
+                        bootstrap_options if bootstrap else None,
+                        include_validation=not study_id,
+                    )
+                    registry.complete_test(event_id, payload)
+                except BaseException as exc:
+                    # An interrupted reservation remains possible exposure even
+                    # if recording the failure itself cannot complete.
+                    try:
+                        registry.fail_test(event_id, f"{type(exc).__name__}: {exc}")
+                    except Exception as audit_error:
+                        warnings.warn(
+                            f"Could not finalize failed reveal; reservation retained: {audit_error}", RuntimeWarning
+                        )
+                    raise
+            best["test_metrics"] = payload["test_metrics"]
+            best["test_evaluated_at"] = payload["test_evaluated_at"]
+            benchmark_metrics = payload["benchmark_metrics"]
+            bootstrap_diagnostics["periods"].update(payload["bootstrap_periods"])
+            test_access["test_results_visible"] = True
+        if bootstrap:
             statuses = [row["status"] for row in bootstrap_diagnostics["periods"].values()]
             bootstrap_diagnostics["status"] = (
                 "ok"
@@ -2056,11 +2236,17 @@ def run_search(
         print(f"  Params: {_params_to_str(params)}")
         print(f"  Val Sharpe:   {best['val_metrics'].get('sharpe', 0):.4f}")
         print(f"  Deflated Sharpe probability: {best['selection_diagnostics']['deflated_sharpe_probability']:.2%}")
-        print(f"  Test Sharpe:  {test_m['sharpe']:.4f} (B&H: {benchmark_metrics['sharpe']:.4f})")
-        print(f"  Test CAGR:    {test_m['cagr']:.2%} (B&H: {benchmark_metrics['cagr']:.2%})")
-        print(f"  Test MaxDD:   {test_m['max_drawdown']:.2%} (B&H: {benchmark_metrics['max_drawdown']:.2%})")
+        print(f"  Test access: {test_access['status']} (history outside this registry remains unknown)")
+        if payload is not None:
+            test_m = payload["test_metrics"]
+            print(f"  Test Sharpe:  {test_m['sharpe']:.4f} (B&H: {benchmark_metrics['sharpe']:.4f})")
+            print(f"  Test CAGR:    {test_m['cagr']:.2%} (B&H: {benchmark_metrics['cagr']:.2%})")
+            print(f"  Test MaxDD:   {test_m['max_drawdown']:.2%} (B&H: {benchmark_metrics['max_drawdown']:.2%})")
+        else:
+            print("  Test scores remain hidden. Explicitly reveal the frozen study when ready.")
     else:
         best = None
+        test_access["status"] = "no_selection"
         print("  WARNING: No valid experiments remained after evaluation.")
 
     # Phase 4: Robustness check on the best parameters
@@ -2068,14 +2254,14 @@ def run_search(
     if robust and best is not None:
         print(f"\n  [Phase 4] Parameter sensitivity (perturbing selected params by {robust_frac:.0%}) ...")
         robustness = robustness_check(
-            data,
-            df,
-            periods,
+            development_data,
+            development_df,
+            selection_periods,
             sname,
             params,
             cost_bps=cost_bps,
             frac=robust_frac,
-            backtest_kwargs=backtest_kwargs,
+            backtest_kwargs=development_backtest_kwargs,
             risk_free_rate=risk_free_rate,
         )
         if robustness.get("error"):
@@ -2144,6 +2330,7 @@ def run_search(
         "best": _jsonable(best),
         "benchmark_metrics": _jsonable(benchmark_metrics),
         "bootstrap_diagnostics": _jsonable(bootstrap_diagnostics),
+        "test_access": _jsonable(test_access),
         "selection_diagnostics": _jsonable(selection_diagnostics),
         "search_diagnostics": _jsonable(halving_diagnostics),
         "indicator_cache": _jsonable(cache_diagnostics),
@@ -2173,6 +2360,7 @@ def run_search(
         "parameter_sensitivity": robustness,
         "benchmark_metrics": benchmark_metrics,
         "bootstrap_diagnostics": bootstrap_diagnostics,
+        "test_access": test_access,
         "selection_diagnostics": selection_diagnostics,
         "search_diagnostics": halving_diagnostics,
         "indicator_cache": cache_diagnostics,

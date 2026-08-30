@@ -48,6 +48,33 @@ momentum-lab SPY --all-strategies --exhaustive --workers 8
 
 未来发布使用的 distribution name 为 `momentum-research-lab`；Python import 和命令行名称仍为 `momentum_lab` 与 `momentum-lab`。
 
+## v0.11 功能升级
+
+- 新增研究登记模式：使用 `--study-id` 固定数据、策略范围与评估规则，默认不计算或展示测试成绩。
+- 共享 SQLite 登记库按股票/资产代码和日期重叠识别历史访问；换实验编号、结果目录或数据版本不会清除同一登记库中的记录。以前用作训练/验证的日期也会被识别。
+- 揭示前先提交访问记录；中断仍算可能已访问。重复计算需要明确确认及理由，同一固定研究再次查看则复用已有结果并记录访问，不标成新的首次测试。
+- 报告区分封存、首次记录、已经揭示、重复使用及历史未知。旧命令仍可运行并自动测试，但现在会记录访问、明确提示历史限制。
+
+```bash
+# 第一步：登记、选型，只查看开发期证据
+momentum-lab GLD --study-id gld-2026q3 --run-id gld-dev --end 2026-08-28
+
+# 查看登记状态，不显示缓存的测试成绩
+momentum-lab study status gld-2026q3
+
+# 第二步：保持配置和数据不变，明确揭示已冻结策略
+momentum-lab GLD --study-id gld-2026q3 --run-id gld-dev --end 2026-08-28 \
+  --resume --reveal-test
+
+# 查看历史、导入已知旧实验（不改写旧文件）
+momentum-lab study history --ticker GLD
+momentum-lab study import-legacy experiments/old-run
+```
+
+已知重叠会阻止新的登记模式测试；确需历史复核时，加 `--allow-test-reuse --test-reuse-reason "历史复核，非新增样本外证据"`。这些确认参数不能写进 JSON 配置自动启用。不要换登记库规避记录，注意备份；旧版本实验不会被自动扫描。
+
+“首次记录”不等于“从未查看过”：登记库之外的历史始终未知，本地文件也不是防篡改或加密托管系统。登记库路径、兼容迁移、崩溃恢复和完整方法见 [GOVERNANCE.md](GOVERNANCE.md)。
+
 ## v0.10 功能升级
 
 - 对最终选定策略新增配对区块 Bootstrap 置信区间，覆盖算术年化平均收益、夏普比率，以及相对买入持有的年化平均超额收益；验证期与测试期分别计算。

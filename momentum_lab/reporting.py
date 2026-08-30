@@ -54,10 +54,10 @@ def _display(value, *, percent=False):
     return str(value)
 
 
-def _metric_rows(best, benchmark):
+def _metric_rows(best, benchmark, *, hide_test=False):
     validation = best.get("val_metrics", {}) if best else {}
-    test = best.get("test_metrics", {}) if best else {}
-    benchmark = benchmark or {}
+    test = best.get("test_metrics", {}) if best and not hide_test else {}
+    benchmark = (benchmark or {}) if not hide_test else {}
     return [
         (
             label,
@@ -117,6 +117,38 @@ def _search_rows(summary, run_config):
     return rows
 
 
+def _hide_test(summary):
+    access = summary.get("test_access")
+    return access is not None and access.get("test_results_visible") is not True
+
+
+def _access_rows(summary):
+    access = summary.get("test_access") or {}
+    return [
+        ("Mode", access.get("mode", "legacy")),
+        ("Study", access.get("study_id")),
+        ("Access status", access.get("status", "history_unknown")),
+        ("Test results visible in this report", not _hide_test(summary)),
+        ("Registry ID", access.get("registry_id")),
+        ("Registered at", access.get("registered_at")),
+        ("Protocol SHA-256", access.get("protocol_sha256")),
+        ("Frozen selection SHA-256", access.get("selection_sha256")),
+        ("Exposure event", access.get("event_id")),
+        ("Cached-result access event", access.get("replay_event_id")),
+        ("Previously revealed result reused", access.get("cached", False)),
+        ("Recorded overlapping observations", access.get("prior_overlap_count")),
+        ("History outside this registry", "unknown"),
+        ("Explicit reuse reason", access.get("reuse_reason")),
+    ]
+
+
+_ACCESS_NOTE = (
+    "The registry tracks programmatic observations, not whether someone read a file. "
+    "First recorded reveal is not proof of untouched data; history outside this registry is unknown. "
+    "Repeated use is not fresh out-of-sample evidence. A local registry is not tamper-proof data custody."
+)
+
+
 def _bootstrap_tables(summary):
     diagnostic = summary.get("bootstrap_diagnostics") or {}
     periods = diagnostic.get("periods") or {}
@@ -134,7 +166,9 @@ def _bootstrap_tables(summary):
             return "—"
         return f"{value * 100:.6g}%" if percent else f"{value:.6g}"
 
-    for label, key in (("Validation", "validation"), ("Sealed test", "test")):
+    for label, key in (("Validation", "validation"), ("Test (see access audit)", "test")):
+        if key == "test" and _hide_test(summary):
+            continue
         period = periods.get(key)
         if not period:
             continue
@@ -178,10 +212,11 @@ def render_markdown_report(summary: Mapping, run_config: Mapping) -> str:
     best = summary.get("best") or {}
     strategy = best.get("strategy") or "No eligible selection"
     params = json.dumps(best.get("params") or {}, ensure_ascii=False, sort_keys=True)
+    test_heading = "Test (withheld)" if _hide_test(summary) else "Test (see access audit)"
     lines = [
         f"# Momentum Lab research report: {run_config.get('ticker', 'unknown')}",
         "",
-        "> Research evidence only. The sealed test result is reported once after selection and is not trading advice.",
+        "> Research evidence only. Test access is described below; no claim of previously unseen data or trading advice.",
         "",
         "## Run overview",
         "",
@@ -194,12 +229,18 @@ def render_markdown_report(summary: Mapping, run_config: Mapping) -> str:
         "",
         "## Performance evidence",
         "",
-        "| Metric | Validation | Sealed test | Buy & hold test |",
+        f"| Metric | Validation | {test_heading} | Buy & hold test |",
         "|---|---:|---:|---:|",
     ]
     lines.extend(
         f"| {label} | {validation} | {test} | {benchmark} |"
-        for label, validation, test, benchmark in _metric_rows(best, summary.get("benchmark_metrics"))
+        for label, validation, test, benchmark in _metric_rows(
+            best, summary.get("benchmark_metrics"), hide_test=_hide_test(summary)
+        )
+    )
+    lines.extend(["", "## Test access audit", "", _ACCESS_NOTE, "", "| Item | Value |", "|---|---|"])
+    lines.extend(
+        f"| {_markdown_cell(label)} | {_markdown_cell(_display(value))} |" for label, value in _access_rows(summary)
     )
     lines.extend(["", "## Selection diagnostics", "", "| Diagnostic | Value |", "|---|---:|"])
     lines.extend(f"| {label} | {_display(value)} |" for label, value in _diagnostic_rows(summary))
@@ -267,13 +308,19 @@ def render_html_report(summary: Mapping, run_config: Mapping) -> str:
     best = summary.get("best") or {}
     strategy = best.get("strategy") or "No eligible selection"
     params = json.dumps(best.get("params") or {}, ensure_ascii=False, sort_keys=True)
+    test_heading = "Test (withheld)" if _hide_test(summary) else "Test (see access audit)"
 
     def esc(value):
         return html.escape(str(value), quote=True)
 
     metric_rows = "".join(
         f"<tr><th>{esc(label)}</th><td>{esc(validation)}</td><td>{esc(test)}</td><td>{esc(benchmark)}</td></tr>"
-        for label, validation, test, benchmark in _metric_rows(best, summary.get("benchmark_metrics"))
+        for label, validation, test, benchmark in _metric_rows(
+            best, summary.get("benchmark_metrics"), hide_test=_hide_test(summary)
+        )
+    )
+    access_rows = "".join(
+        f"<tr><th>{esc(label)}</th><td>{esc(_display(value))}</td></tr>" for label, value in _access_rows(summary)
     )
     diagnostics = "".join(
         f"<tr><th>{esc(label)}</th><td>{esc(_display(value))}</td></tr>" for label, value in _diagnostic_rows(summary)
@@ -327,11 +374,12 @@ def render_html_report(summary: Mapping, run_config: Mapping) -> str:
 main{{max-width:1000px;margin:32px auto;padding:0 18px 48px}}section,header{{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:22px;margin:16px 0}}
 h1{{margin:0 0 8px;font-size:28px}}h2{{margin:0 0 14px;font-size:20px}}p.note{{color:var(--muted)}}code{{overflow-wrap:anywhere}}table{{width:100%;border-collapse:collapse}}th,td{{padding:9px 10px;border-bottom:1px solid var(--line);text-align:right}}th:first-child{{text-align:left}}thead th{{color:var(--muted)}}dl{{display:grid;grid-template-columns:minmax(150px,220px) 1fr;gap:8px 18px}}dt{{color:var(--muted)}}dd{{margin:0}}
 </style></head><body><main>
-<header><h1>Momentum Lab research report</h1><p class="note">Research evidence only. The sealed test is reported once after selection and is not trading advice.</p>
+<header><h1>Momentum Lab research report</h1><p class="note">Research evidence only. Test access is described below; no claim of previously unseen data or trading advice.</p>
 <dl><dt>Ticker</dt><dd>{esc(run_config.get("ticker", "unknown"))}</dd><dt>Run ID</dt><dd>{esc(summary.get("run_id", "unknown"))}</dd>
 <dt>Package</dt><dd>{esc(run_config.get("package_version", "unknown"))}</dd><dt>Data</dt><dd>{esc(run_config.get("data_start", "unknown"))} to {esc(run_config.get("data_end", "unknown"))}</dd>
 <dt>Experiments</dt><dd>{esc(summary.get("n_results", 0))} ({esc(summary.get("n_errors", 0))} errors)</dd><dt>Selected strategy</dt><dd>{esc(strategy)}</dd><dt>Parameters</dt><dd><code>{esc(params)}</code></dd></dl></header>
-<section><h2>Performance evidence</h2><table><thead><tr><th>Metric</th><th>Validation</th><th>Sealed test</th><th>Buy &amp; hold test</th></tr></thead><tbody>{metric_rows}</tbody></table></section>
+<section><h2>Performance evidence</h2><table><thead><tr><th>Metric</th><th>Validation</th><th>{esc(test_heading)}</th><th>Buy &amp; hold test</th></tr></thead><tbody>{metric_rows}</tbody></table></section>
+<section><h2>Test access audit</h2><p class="note">{esc(_ACCESS_NOTE)}</p><table><tbody>{access_rows}</tbody></table></section>
 <section><h2>Selection diagnostics</h2><table><tbody>{diagnostics}</tbody></table></section>
 {bootstrap_section}
 <section><h2>Search efficiency</h2><table><tbody>{search_efficiency}</tbody></table></section>

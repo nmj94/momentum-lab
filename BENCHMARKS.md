@@ -141,5 +141,6 @@ unchanged. See [UNCERTAINTY.md](UNCERTAINTY.md) for the statistical contract.
 
 Future work remains: licensed historical cross-asset/regime benchmarks, search
 selection benchmarks, correlated-trial estimates, selection-aware uncertainty,
-and persistent out-of-sample reveal governance. This small fixed synthetic suite
+and externally verifiable out-of-sample governance beyond the local v0.11
+observation registry. This small fixed synthetic suite
 is not a substitute for any of those, or for prospective paper trading.

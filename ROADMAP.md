@@ -87,11 +87,28 @@ Delivered in v0.10.0:
 - Independent scalar-oracle frozen tests; existing ranking/accounting baselines
   remain unchanged. These intervals are not selection-adjusted evidence.
 
+## v0.11 — Registered studies and observation history
+
+Delivered in v0.11.0:
+
+- Frozen study protocols and final selections, default-hidden registered test
+  evaluation and invocation-only explicit reveal/reuse acknowledgements.
+- Shared ticker/date observation history across run IDs, data versions and
+  directories, including prior development use and interrupted revelations.
+- Transactional pre-evaluation reservations, cached result replays, registry
+  identity checks, legacy import and score-free status/history commands.
+- Report access states and defensive hiding, development-only sensitivity,
+  concurrent/crash-recovery tests and an installed-wheel lifecycle smoke.
+
+Scope: local workflow/audit controls, not encryption, tamper-proof custody or
+proof that historical data was never inspected elsewhere.
+
 Next evidence work:
 
 - Licensed, frozen historical cross-asset/cross-regime investment benchmarks.
 - Correlated effective-trial estimates and selection-aware uncertainty.
-- Persistent test-reveal records and research preregistration across run IDs.
+- Stable cross-provider asset identity, shared/custodial registration and
+  externally verifiable prospective protocols beyond the local v1 registry.
 
 ## v1.0 — Stable research platform
 

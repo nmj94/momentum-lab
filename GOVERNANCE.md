@@ -1,0 +1,218 @@
+# Research registration and test access (v0.11)
+
+The research registry prevents accidental reuse from being labelled as a new
+test. It is a **local observation ledger, not encrypted test-data custody or a
+tamper-proof preregistration service**. It cannot know whether data was inspected
+elsewhere, on another machine, before registration, or under another symbol.
+"First recorded reveal" never means "proven previously unseen data".
+
+## Two-step research workflow
+
+Use a study ID and a fixed end date. The first invocation registers the protocol
+before candidate evaluation, selects on development data, freezes the winner,
+and writes a report **without computing or displaying test metrics**:
+
+```bash
+momentum-lab GLD --study-id gld-2026q3 --run-id gld-dev --end 2026-08-28
+
+# Metadata only: these commands do not reveal cached test scores.
+momentum-lab study status gld-2026q3
+momentum-lab study history --ticker GLD --limit 100
+
+# Explicitly reveal the already-frozen selection in a separate invocation.
+momentum-lab GLD --study-id gld-2026q3 --run-id gld-dev --end 2026-08-28 \
+  --resume --reveal-test
+```
+
+Keep the same search options, source, environment and data snapshot when
+revealing. A moving `end=None` or revised provider history can change the
+snapshot and will be rejected, not silently substituted. A new protocol needs
+a new study ID; changing that ID does not erase observed-date overlap.
+
+Only `study_id` and `registry_path` are added to `SearchConfig`. Consent flags
+`--reveal-test`, `--allow-test-reuse` and `--test-reuse-reason` are invocation-only:
+they cannot be enabled by a reused JSON configuration. This remains true with
+`run_search(config=..., resume=True, reveal_test=True)`.
+
+```python
+from momentum_lab import SearchConfig, StudyRegistry, run_search
+
+config = SearchConfig(
+    ticker="GLD", strategies=["tsmom", "ma_cross"], end="2026-08-28",
+    study_id="gld-2026q3", run_id="gld-dev", robust=False,
+)
+sealed = run_search(config=config)
+assert "test_metrics" not in sealed["best"]  # Provided an eligible winner exists.
+
+# Inspect the validation evidence, then make an explicit decision to reveal.
+revealed = run_search(config=config, resume=True, reveal_test=True)
+print(revealed["test_access"]["status"])
+print(StudyRegistry(create=False).status("gld-2026q3"))  # No test-score payload.
+```
+
+## What is fixed, and when
+
+- Registration stores canonical JSON and a SHA-256 protocol digest. It binds
+  the indexed full-data hash, actual train/validation/test bounds, ticker,
+  candidate strategy grids/universal parameters, quick or halving settings,
+  ranking/evidence gates, execution/financing assumptions, annualization,
+  bootstrap settings, package/source/lock/environment fingerprints.
+- This occurs after the coordinator has prepared and hashed market data, but
+  **before candidate evaluation**. It is not a claim of registration before
+  downloading or before any human could have seen historical prices.
+- Candidate workers receive development observations only. Registered runs
+  compute validation bootstrap diagnostics on development-only ledgers.
+  Parameter-sensitivity analysis also receives only development data and bounds,
+  in both registered and legacy modes.
+- The first selected strategy, parameters and validation-selection evidence are
+  frozen. Another run cannot replace them inside the same study. Worker count,
+  top-N display and report controls remain presentation/execution choices;
+  they do not authorize another test selection.
+- A new registered run requires an empty run directory; use `--resume` to
+  continue it. Registry identity/path and study ID are resume-locked. Missing
+  metadata, a missing/replaced registry, or a changed protocol fails closed.
+
+The coordinator necessarily holds the price snapshot to prepare/hash/split it.
+"Sealed" refers to this workflow's evaluation/output boundary, **not hiding raw
+data in memory or preventing direct filesystem/Python access**.
+
+## Cross-run observation matching
+
+The shared SQLite registry lives in the OS user-data directory for
+`momentum-lab`, not in an individual experiment or in `site-packages`.
+`run_config.json` records its resolved path and identity. Precedence is:
+
+1. Explicit `registry_path` / `--registry`.
+2. Environment variable `MOMENTUM_LAB_REGISTRY_PATH`.
+3. Default user-data location, file `research-registry.sqlite3`.
+
+For study subcommands, put the optional registry flag **before** the subcommand:
+
+```bash
+momentum-lab study --registry /path/to/research-registry.sqlite3 list
+momentum-lab study --registry /path/to/research-registry.sqlite3 status gld-2026q3
+```
+
+Observation matching uses the normalized uppercase ticker and inclusive daily
+session-date overlap: `old.start <= new.end` and `old.end >= new.start`.
+Data hashes, study IDs, run IDs and source versions **are not filters** in this
+query. Thus copying results to another directory, changing IDs, revising prices
+or partly shifting test boundaries does not clear recorded overlap in the same
+registry. Same-day endpoints overlap; the following calendar day does not.
+
+Training/validation ranges are conservatively recorded before search work.
+They also count when later proposed as test dates. Interrupted work may thus
+cause a warning even if no useful score was ultimately displayed; no inference
+is made about whether the human actually read it.
+
+This v1 scheme is for the current daily Yahoo-ticker data model. Symbol aliases,
+renames, strongly correlated assets, intraday instant matching, other registries
+and external analysis are not reconciled automatically. Those limitations must
+not be mistaken for independent investment evidence.
+
+## Reveal, replay and interruption
+
+SQLite `BEGIN IMMEDIATE` transactions serialize overlap checking and reservation.
+The possible-exposure reservation is committed with full synchronous writes
+**before** a full-data strategy or benchmark is evaluated. The database lock is
+not held throughout the backtest. Two ordinary concurrent claims cannot both
+receive a first-recorded assessment.
+
+When known observations overlap, a new registered evaluation is blocked unless
+the user explicitly acknowledges historical reuse and supplies a reason:
+
+```bash
+momentum-lab GLD --study-id gld-2026q3 --run-id gld-dev --end 2026-08-28 \
+  --resume --reveal-test --allow-test-reuse \
+  --test-reuse-reason "Revised historical comparison, not new out-of-sample evidence"
+```
+
+The reason is stored with the event, and the result is marked `repeated_use`.
+Acknowledgement does not remove earlier observations or restore independence.
+
+Completed test metrics, benchmark metrics, test-bootstrap diagnostics and their
+original evaluation timestamp are stored with a payload digest. A later explicit
+reveal of the same fixed study reuses that result without another test backtest.
+It is labelled `previously_revealed`, and a separate `reveal_replay` event links
+the new access to the original evaluation. It needs no new reuse override because
+it is a reread of existing evidence, not a new evaluation.
+
+Reservations survive exceptions, keyboard interruption and failed exports.
+`reserved` and `failed` records count as possible exposure. Retrying an incomplete
+evaluation requires acknowledgement; a completed evaluation with a failed report
+export is recovered from the cached result. Corrupt protocol/selection/payload
+digests are errors, not a trigger to recompute or reset history.
+
+## Output states
+
+Final JSON/Python results contain `test_access`; human reports have a matching
+audit section. Always read `test_results_visible` as well as `status`.
+
+| Status | Meaning |
+|---|---|
+| `sealed` | No recorded overlap; this run withholds test computation/results. External history remains unknown. |
+| `known_prior_exposure` | Results are withheld, but overlapping observations or incomplete reveals exist. |
+| `first_recorded_reveal` | First recorded test evaluation of these dates in this registry, not proof of untouched data. |
+| `previously_revealed` | This study already has a completed result; explicit replay reads it, otherwise scores stay hidden. |
+| `repeated_use` | A new evaluation overlaps recorded observations; registered mode requires an explicit reason. |
+| `history_unknown` | Legacy, unregistered or imported history cannot establish a first use. |
+| `no_selection` | No eligible final winner; no test claim was made. |
+
+In registered sealed output, `best` has no `test_metrics` or test-evaluation
+timestamp, benchmark test metrics are null, and bootstrap contains validation
+only. Candidate CSVs and the SQLite candidate journal still contain development
+evidence only. Report renderers also suppress any stale test fields when the
+visibility flag is false. Status/list/history commands return metadata, never
+the cached score payload. History is bounded to 100 events by default (maximum
+1000); overlap checks count **all** matching records, not just displayed rows.
+
+## Legacy compatibility and import
+
+Commands without `--study-id` retain automatic final-selection test evaluation.
+They now record development and test access in the shared registry. Reports
+explicitly say `history_unknown`, or `repeated_use` where an overlap is known;
+they no longer claim that a per-run sealed test proves globally fresh evidence.
+Registered mode is therefore recommended for new research.
+
+Older reports are **not automatically scanned or rewritten**. Import each known
+old run with visible test results to prevent it being forgotten:
+
+```bash
+momentum-lab study import-legacy experiments/old-run
+```
+
+Import requires matching `run_config.json`/`summary.json` run IDs, an indexed-data
+digest, ordered period bounds and visible test metrics. It records historical
+development and test observations with unknown access history. Identical imports
+are idempotent even after moving the artifact directory. No old artifact is
+modified, and no old test is certified as unused. A sealed report cannot be
+imported as already-visible test evidence.
+
+Pre-v0.11 checkpoints do not carry registry identity and cannot be silently
+upgraded by resuming; retain the old environment for old runs, import their test
+evidence, and use a new run/protocol where necessary. Accounting engine schema 5
+and the 16 frozen accounting ledgers are unchanged; new run metadata is stricter.
+
+## Persistence, security and validation
+
+Keep one consistent registry for the research program, on a filesystem suitable
+for local SQLite locking. Back it up using SQLite's backup API, or copy it while
+all writers are stopped. Restore a complete trusted history, not an older snapshot
+that omits later accesses. Registry files contain cached test results; protect
+them accordingly and do not commit them to Git. Default `.gitignore` covers
+`.sqlite3` registries and sidecars.
+
+There is no deletion/reset command, automatic corruption recovery, or hidden
+fallback to a new registry. Nevertheless an administrator can delete/edit files,
+restore an old backup, choose a separate registry or inspect cached data directly.
+This implementation does not prevent those actions or establish a cryptographic
+chain of custody. A first-recorded label remains conditional on the retained
+registry, never a global freshness guarantee.
+
+Tests cover protocol/selection immutability, date/data-version matching,
+development reuse, concurrent claims and creation, fail-closed interruption,
+cached replays, legacy import, output masking, config consent, resume identity,
+unchanged ranking and successive-halving integration. `scripts/governance_smoke.py`
+exercises the real lifecycle with fixed synthetic data and the installed wheel,
+without requesting market data. Licensed historical investment benchmarks and
+selection-aware statistical inference remain separate future work.

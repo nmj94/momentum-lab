@@ -37,6 +37,13 @@ If no benchmark is supplied to the Python API, its statistics are explicitly
 
 ## Where it runs
 
+Since v0.11, registered studies (`--study-id`) compute validation diagnostics on
+development-only ledgers and withhold test diagnostics until an explicit reveal.
+Completed test diagnostics are cached for subsequent explicit views of the same
+fixed study. These controls do not make already-observed data independent; see
+[GOVERNANCE.md](GOVERNANCE.md). The legacy workflow below retains automatic final
+test evaluation, now with access recording and explicit history limitations.
+
 Search first ranks candidates with the existing validation/Deflated-Sharpe
 logic, copies the final selection, and evaluates its continuous full ledger
 and the buy-and-hold ledger once each. Bootstrap reads slices of those existing
@@ -141,4 +148,5 @@ The original 16 accounting benchmark ledgers and search engine schema 5 are
 unchanged. Their compatibility does not validate the new statistical assumptions.
 
 Remaining work includes selection-aware inference, correlated effective trial
-counts, licensed historical benchmarks and persistent test-reveal governance.
+counts, licensed historical benchmarks and externally verifiable prospective
+governance beyond the local observation registry delivered in v0.11.

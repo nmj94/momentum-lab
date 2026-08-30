@@ -4,11 +4,23 @@ import argparse
 import sys
 
 from . import __version__
+from .governance import RegistryError
 from .search import run_search
 from .strategies import STRATEGY_REGISTRY, list_strategies
 
 
+def _run_checked(parser, **kwargs):
+    try:
+        return run_search(**kwargs)
+    except RegistryError as exc:
+        parser.error(str(exc))
+
+
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "study":
+        from .governance import main as study_main
+
+        return study_main(sys.argv[2:])
     if len(sys.argv) > 1 and sys.argv[1] == "benchmark":
         from .benchmarks import main as benchmark_main
 
@@ -34,6 +46,19 @@ def main():
         "--config", type=str, default=None, help="JSON search config; its values take precedence over CLI defaults"
     )
     parser.add_argument("--resume", action="store_true", help="Resume an existing --run-id from its SQLite journal")
+    parser.add_argument(
+        "--study-id", help="Register a fixed research protocol; hide test results until explicitly revealed"
+    )
+    parser.add_argument(
+        "--registry", dest="registry_path", help="Shared observation registry (independent of result-dir)"
+    )
+    parser.add_argument("--reveal-test", action="store_true", help="Reveal the previously frozen study selection")
+    parser.add_argument(
+        "--allow-test-reuse", action="store_true", help="Acknowledge known prior test-period observations"
+    )
+    parser.add_argument(
+        "--test-reuse-reason", help="Required reason for --allow-test-reuse; remains in the audit record"
+    )
     search_mode = parser.add_mutually_exclusive_group()
     search_mode.add_argument(
         "--quick", dest="quick", action="store_true", default=True, help="Quick mode: 5 params per strategy (default)"
@@ -190,7 +215,8 @@ def main():
     elif args.all_strategies:
         strategies = list(STRATEGY_REGISTRY)
 
-    run_search(
+    _run_checked(
+        parser,
         ticker=args.ticker or "GLD",
         strategies=strategies,
         cost_bps=args.cost,
@@ -241,6 +267,11 @@ def main():
         generate_report=args.generate_report,
         config=args.config,
         resume=args.resume,
+        study_id=args.study_id,
+        registry_path=args.registry_path,
+        reveal_test=args.reveal_test,
+        allow_test_reuse=args.allow_test_reuse,
+        test_reuse_reason=args.test_reuse_reason,
     )
 
 

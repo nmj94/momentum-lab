@@ -787,7 +787,8 @@ def test_run_search_smoke_and_artifacts(tmp_path, monkeypatch):
     assert summary["reports"] == {"markdown": "report.md", "html": "report.html"}
     markdown = (tmp_path / "smoke" / "report.md").read_text(encoding="utf-8")
     html = (tmp_path / "smoke" / "report.html").read_text(encoding="utf-8")
-    assert "Sealed test" in markdown
+    assert "Test access audit" in markdown
+    assert "history_unknown" in markdown
     assert "Execution and financing assumptions" in markdown
     assert "<!doctype html>" in html
 

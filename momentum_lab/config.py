@@ -64,6 +64,8 @@ class SearchConfig:
     bootstrap_confidence: float = 0.95
     bootstrap_seed: int = 42
     bootstrap_min_observations: int = 60
+    study_id: str | None = None
+    registry_path: str | None = None
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, Any]) -> "SearchConfig":

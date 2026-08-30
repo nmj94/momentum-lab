@@ -34,6 +34,10 @@ experiments/
 output/
 results/
 
+# Private research access histories and cached test results
+*.sqlite3
+*.sqlite3-*
+
 # OS
 .DS_Store
 Thumbs.db

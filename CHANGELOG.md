@@ -3,6 +3,33 @@
 All notable changes are documented here. The project follows semantic versioning
 for its public Python API and run/checkpoint schema.
 
+## [0.11.0] - 2026-08-30
+
+### Research registration and test-access audit
+
+- Added `--study-id` protocols that bind data, candidate grids, evaluation rules
+  and numerical/source identity before candidate work, then freeze the winner.
+- Registered searches withhold test evaluation/results until a separate explicit
+  reveal. Reveal/reuse acknowledgement is invocation-only, not JSON-configurable.
+- Added a shared SQLite observation registry independent of run/result directories;
+  overlap checks ignore data hashes/run IDs and include prior development ranges.
+- Reserved possible exposure durably before full-data evaluation. Concurrent
+  claims are serialized, interrupted attempts remain recorded, and repeated
+  evaluations require an explicit acknowledgement and recorded reason.
+- Cached completed reveals preserve their original evaluation timestamp; repeat
+  views are logged and labelled previously revealed, never another first test.
+- Added score-free study list/status/history commands and idempotent legacy
+  artifact import. Old files are not rewritten and unknown history is not certified.
+- Added report access-audit sections and defensive test-field masking. Legacy
+  automatic evaluation stays available, with recorded access and history warnings.
+- Restricted parameter-sensitivity data/bounds to development observations.
+- Added governance tests and an offline installed-wheel lifecycle smoke in CI.
+
+Registry schema 1 is local accident-prevention/audit infrastructure, not encrypted
+or tamper-proof custody. Candidate ranking, engine schema 5, accounting ledgers
+and frozen statistical references are unchanged. New registry identity fields
+make old checkpoint migration explicit; see `GOVERNANCE.md`.
+
 ## [0.10.0] - 2026-08-30
 
 ### Conditional return uncertainty
