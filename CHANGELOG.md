@@ -31,6 +31,9 @@ for its public Python API and run/checkpoint schema.
 - Added two independently generated frozen membership/boundary ledgers, strict
   contract/causality/accounting/concurrency/interruption tests, clean core-wheel
   lifecycle CI, synthetic examples and English/Chinese documentation.
+- Cross-Python oracle reconstruction permits at most eight ULPs only for
+  derived Sharpe/volatility (stdlib rounding differs on Python 3.10); inputs,
+  complete books, frozen hashes and production regression tolerances are unchanged.
 
 Compatibility: single-asset engine/checkpoint schema 5, portfolio book schema 1,
 base registry/user-version 1 and the 16 + 6 existing frozen cases are unchanged.
