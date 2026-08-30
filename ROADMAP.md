@@ -103,6 +103,20 @@ Delivered in v0.11.0:
 Scope: local workflow/audit controls, not encryption, tamper-proof custody or
 proof that historical data was never inspected elsewhere.
 
+## v0.12 — Offline research data and provenance
+
+Delivered in v0.12.0:
+
+- User-supplied daily CSV snapshots with strict dates/OHLCV validation, explicit
+  calendar/adjustment/currency/source/usage declarations and original-byte hashes.
+- Offline import/inspect/search APIs and CLI, no network fallback, portable
+  contracts and provenance-locked study/resume integration.
+- Provenance in JSON and human reports, synthetic parser regression tests and
+  an installed-wheel offline study/reveal/replay lifecycle.
+
+This provides a path for users to bring data they are licensed to use; it does
+not supply licensed historical investment benchmarks or certify those rights.
+
 Next evidence work:
 
 - Licensed, frozen historical cross-asset/cross-regime investment benchmarks.

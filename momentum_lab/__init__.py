@@ -4,6 +4,7 @@ from ._version import __version__
 from .backtest import backtest, evaluate, evaluate_strategy
 from .config import SearchConfig, load_search_config
 from .data import MarketDataUnavailableError, download_data, prepare_data
+from .datasets import DatasetError, import_dataset, load_dataset
 from .governance import RegistryError, StudyRegistry, TestReuseError
 from .indicators import IndicatorDAG
 from .reporting import render_html_report, render_markdown_report
@@ -19,6 +20,7 @@ from .uncertainty import paired_block_bootstrap
 
 __all__ = [
     "STRATEGY_REGISTRY",
+    "DatasetError",
     "IndicatorDAG",
     "MarketDataUnavailableError",
     "RegimeAware",
@@ -32,7 +34,9 @@ __all__ = [
     "evaluate",
     "evaluate_strategy",
     "get_strategy",
+    "import_dataset",
     "list_strategies",
+    "load_dataset",
     "load_search_config",
     "paired_block_bootstrap",
     "prepare_data",

@@ -400,8 +400,8 @@ def compute_features(df, annualization=252.0):
     return feats
 
 
-def prepare_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True, annualization=None):
-    """Download data + compute features, return unified data dict.
+def prepare_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True, annualization=None, dataset=None):
+    """Load market data + compute features, return unified data dict.
 
     Args:
         ticker: Yahoo Finance ticker.
@@ -411,13 +411,32 @@ def prepare_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True, ann
         annualization: Return periods per year. ``None`` infers 365 for common
             Yahoo crypto pairs and 252 otherwise. Strategies read the resolved
             value from the data dict so volatility targeting matches evaluation.
+        dataset: Optional offline manifest path. No downloads or Yahoo caches
+            are used; annualization must match its declared daily convention.
+            ``end=None`` means the snapshot's last date, not today.
 
     Returns:
-        (data_dict, df) where data_dict has keys for strategy consumption
-        and df is the raw OHLCV DataFrame.
+        (data_dict, df) where data_dict has keys for strategy consumption and
+        ``data_provenance`` declarations, and df is the raw OHLCV DataFrame.
     """
-    annualization = infer_annualization(ticker) if annualization is None else annualization
-    df = download_data(ticker, start=start, end=end, use_cache=use_cache)
+    if dataset is not None:
+        from .datasets import load_dataset, resolve_dataset_annualization
+
+        df, provenance = load_dataset(dataset, ticker=ticker, start=start, end=end)
+        annualization = resolve_dataset_annualization(provenance, annualization)
+    else:
+        annualization = infer_annualization(ticker) if annualization is None else annualization
+        df = download_data(ticker, start=start, end=end, use_cache=use_cache)
+        provenance = {
+            "provider": "yahoo",
+            "source": "Yahoo Finance via yfinance",
+            "license": "Provider terms apply; usage rights are not verified by Momentum Lab",
+            "ticker": str(ticker).upper(),
+            "frequency": "1d",
+            "price_adjustment": "yfinance_auto_adjust",
+            "calendar": "continuous" if is_continuously_traded(ticker) else "exchange",
+            "annualization": float(annualization),
+        }
     feats = compute_features(df, annualization=annualization)
 
     data = {
@@ -429,5 +448,6 @@ def prepare_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True, ann
         "features": feats,
         "ticker": ticker,
         "annualization": annualization,
+        "data_provenance": provenance,
     }
     return data, df

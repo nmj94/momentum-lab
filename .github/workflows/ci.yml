@@ -65,7 +65,7 @@ jobs:
           uv venv .wheel-venv
           uv pip install --python .wheel-venv/bin/python dist/*.whl
           .wheel-venv/bin/momentum-lab --version
-          .wheel-venv/bin/python -c "import momentum_lab; assert momentum_lab.__version__ == '0.11.0'"
+          .wheel-venv/bin/python -c "import momentum_lab; assert momentum_lab.__version__ == '0.12.0'"
       - name: Verify packaged frozen fixtures outside the source checkout
         run: |
           wheel_python="$GITHUB_WORKSPACE/.wheel-venv/bin/python"
@@ -92,6 +92,12 @@ jobs:
           governance_workspace="$(mktemp -d)"
           cd "$governance_workspace"
           "$wheel_python" "$GITHUB_WORKSPACE/scripts/governance_smoke.py"
+      - name: Verify installed offline datasets and research lifecycle
+        run: |
+          wheel_python="$GITHUB_WORKSPACE/.wheel-venv/bin/python"
+          dataset_workspace="$(mktemp -d)"
+          cd "$dataset_workspace"
+          "$wheel_python" "$GITHUB_WORKSPACE/scripts/dataset_smoke.py"
 
   network-test:
     if: github.event_name == 'schedule'

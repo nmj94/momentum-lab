@@ -25,9 +25,11 @@ env/
 
 # Data cache (user downloads their own data)
 data/
+datasets/
 *.csv
 *.parquet
 !tests/*.csv
+!tests/fixtures/*.csv
 
 # Experiment results
 experiments/

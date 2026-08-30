@@ -23,6 +23,7 @@ _METRICS = (
 )
 
 _ASSUMPTIONS = (
+    ("annualization", "Return periods per year"),
     ("execution_model", "Execution model"),
     ("cost_bps", "Commission (bps)"),
     ("slippage_bps", "Slippage (bps)"),
@@ -40,6 +41,43 @@ _ASSUMPTIONS = (
     ("short_rebate_rate", "Short rebate rate"),
     ("max_leverage", "Maximum leverage"),
 )
+
+
+_DATA_NOTE = (
+    "Source, license, calendar and adjustment labels are declarations, not independently verified facts. "
+    "Checksums identify bytes and declarations, not completeness, point-in-time availability, legal permission "
+    "or previously unseen data. Corporate actions and dividend cashflows are not reconstructed. "
+    "Bar volume must be in asset units consistent with the price basis when liquidity constraints are used."
+)
+
+
+def _data_rows(summary, run_config):
+    provenance = run_config.get("data_provenance") or summary.get("data_provenance") or {}
+    labels = (
+        ("provider", "Provider"),
+        ("dataset_id", "Dataset ID"),
+        ("source", "Source declaration"),
+        ("license", "Usage declaration"),
+        ("currency", "Price currency"),
+        ("frequency", "Bar frequency"),
+        ("calendar", "Calendar declaration"),
+        ("annualization", "Declared periods per year"),
+        ("price_adjustment", "Price adjustment"),
+        ("rows", "Full snapshot rows"),
+        ("first_date", "Snapshot first session"),
+        ("last_date", "Snapshot last session"),
+        ("has_volume", "Volume supplied"),
+        ("sha256", "Raw CSV SHA-256"),
+        ("contract_sha256", "Dataset contract SHA-256"),
+    )
+    rows = [(label, provenance[key]) for key, label in labels if key in provenance]
+    if not rows:
+        rows.append(("Provenance", "Unavailable in this run; do not infer a verified source"))
+    if "data_snapshot" in run_config:
+        rows.append(("Evaluated data fingerprint", run_config["data_snapshot"]))
+    if provenance.get("price_adjustment") in {"unadjusted", "split_adjusted"}:
+        rows.append(("Return warning", "Distributions may be excluded; unadjusted splits can cause artificial jumps"))
+    return rows
 
 
 def _display(value, *, percent=False):
@@ -242,6 +280,11 @@ def render_markdown_report(summary: Mapping, run_config: Mapping) -> str:
     lines.extend(
         f"| {_markdown_cell(label)} | {_markdown_cell(_display(value))} |" for label, value in _access_rows(summary)
     )
+    lines.extend(["", "## Data provenance", "", _DATA_NOTE, "", "| Item | Value |", "|---|---|"])
+    lines.extend(
+        f"| {_markdown_cell(label)} | {_markdown_cell(_display(value))} |"
+        for label, value in _data_rows(summary, run_config)
+    )
     lines.extend(["", "## Selection diagnostics", "", "| Diagnostic | Value |", "|---|---:|"])
     lines.extend(f"| {label} | {_display(value)} |" for label, value in _diagnostic_rows(summary))
     status, note, settings, intervals = _bootstrap_tables(summary)
@@ -322,6 +365,10 @@ def render_html_report(summary: Mapping, run_config: Mapping) -> str:
     access_rows = "".join(
         f"<tr><th>{esc(label)}</th><td>{esc(_display(value))}</td></tr>" for label, value in _access_rows(summary)
     )
+    provenance_rows = "".join(
+        f"<tr><th>{esc(label)}</th><td>{esc(_display(value))}</td></tr>"
+        for label, value in _data_rows(summary, run_config)
+    )
     diagnostics = "".join(
         f"<tr><th>{esc(label)}</th><td>{esc(_display(value))}</td></tr>" for label, value in _diagnostic_rows(summary)
     )
@@ -372,7 +419,7 @@ def render_html_report(summary: Mapping, run_config: Mapping) -> str:
 :root{{--bg:#f6f8fb;--card:#fff;--ink:#18202b;--muted:#5d6878;--line:#dbe1e8;--accent:#1769aa}}
 *{{box-sizing:border-box}}body{{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 system-ui,-apple-system,sans-serif}}
 main{{max-width:1000px;margin:32px auto;padding:0 18px 48px}}section,header{{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:22px;margin:16px 0}}
-h1{{margin:0 0 8px;font-size:28px}}h2{{margin:0 0 14px;font-size:20px}}p.note{{color:var(--muted)}}code{{overflow-wrap:anywhere}}table{{width:100%;border-collapse:collapse}}th,td{{padding:9px 10px;border-bottom:1px solid var(--line);text-align:right}}th:first-child{{text-align:left}}thead th{{color:var(--muted)}}dl{{display:grid;grid-template-columns:minmax(150px,220px) 1fr;gap:8px 18px}}dt{{color:var(--muted)}}dd{{margin:0}}
+h1{{margin:0 0 8px;font-size:28px}}h2{{margin:0 0 14px;font-size:20px}}p.note{{color:var(--muted)}}code,td,dd{{overflow-wrap:anywhere}}table{{width:100%;border-collapse:collapse}}th,td{{padding:9px 10px;border-bottom:1px solid var(--line);text-align:right}}th:first-child{{text-align:left}}thead th{{color:var(--muted)}}dl{{display:grid;grid-template-columns:minmax(150px,220px) 1fr;gap:8px 18px}}dt{{color:var(--muted)}}dd{{margin:0}}
 </style></head><body><main>
 <header><h1>Momentum Lab research report</h1><p class="note">Research evidence only. Test access is described below; no claim of previously unseen data or trading advice.</p>
 <dl><dt>Ticker</dt><dd>{esc(run_config.get("ticker", "unknown"))}</dd><dt>Run ID</dt><dd>{esc(summary.get("run_id", "unknown"))}</dd>
@@ -380,6 +427,7 @@ h1{{margin:0 0 8px;font-size:28px}}h2{{margin:0 0 14px;font-size:20px}}p.note{{c
 <dt>Experiments</dt><dd>{esc(summary.get("n_results", 0))} ({esc(summary.get("n_errors", 0))} errors)</dd><dt>Selected strategy</dt><dd>{esc(strategy)}</dd><dt>Parameters</dt><dd><code>{esc(params)}</code></dd></dl></header>
 <section><h2>Performance evidence</h2><table><thead><tr><th>Metric</th><th>Validation</th><th>{esc(test_heading)}</th><th>Buy &amp; hold test</th></tr></thead><tbody>{metric_rows}</tbody></table></section>
 <section><h2>Test access audit</h2><p class="note">{esc(_ACCESS_NOTE)}</p><table><tbody>{access_rows}</tbody></table></section>
+<section><h2>Data provenance</h2><p class="note">{esc(_DATA_NOTE)}</p><table><tbody>{provenance_rows}</tbody></table></section>
 <section><h2>Selection diagnostics</h2><table><tbody>{diagnostics}</tbody></table></section>
 {bootstrap_section}
 <section><h2>Search efficiency</h2><table><tbody>{search_efficiency}</tbody></table></section>

@@ -57,6 +57,32 @@ momentum-lab SPY --all-strategies --exhaustive --workers 8
 The future PyPI distribution name is `momentum-research-lab`; the Python import
 and CLI remain `momentum_lab` and `momentum-lab`.
 
+## What changed in v0.12
+
+- Added offline CSV snapshots with explicit source, usage terms, currency,
+  daily calendar and price-adjustment declarations. Yahoo remains optional at
+  runtime: local datasets never fall back to a download.
+- Strict OHLCV/date validation and SHA-256 checks reject malformed or changed
+  inputs. The exact imported CSV bytes are preserved in a new output directory.
+- Dataset provenance is locked into studies/resume and appears in JSON,
+  Markdown and HTML. Moving an unchanged snapshot is supported; changing its
+  bytes or declarations requires a new run.
+- Local datasets follow the existing sealed-test/reveal/audit workflow. Source
+  and license strings are declarations, not verified quality or usage rights.
+
+```bash
+momentum-lab data import my-prices.csv --output datasets/spy-v1 --ticker SPY \
+  --source "My licensed export" --license "Private research use" \
+  --currency USD --calendar exchange --price-adjustment split_and_dividend_adjusted
+momentum-lab data inspect datasets/spy-v1/manifest.json
+momentum-lab SPY --dataset datasets/spy-v1/manifest.json --start 2020-01-01 \
+  --study-id spy-local-v1 --run-id spy-local-v1
+```
+
+CSV format: `date,open,high,low,close[,volume]`. Only import data you may use;
+no licensed historical market dataset is bundled. See [DATASETS.md](DATASETS.md)
+for daily-date semantics, adjustment/volume caveats, explicit reveals and APIs.
+
 ## What changed in v0.11
 
 - Added registered studies with fixed data, strategy-space and evaluation

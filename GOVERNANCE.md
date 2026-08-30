@@ -1,4 +1,4 @@
-# Research registration and test access (v0.11)
+# Research registration and test access (v0.11+, dataset binding in v0.12)
 
 The research registry prevents accidental reuse from being labelled as a new
 test. It is a **local observation ledger, not encrypted test-data custody or a
@@ -105,10 +105,18 @@ They also count when later proposed as test dates. Interrupted work may thus
 cause a warning even if no useful score was ultimately displayed; no inference
 is made about whether the human actually read it.
 
-This v1 scheme is for the current daily Yahoo-ticker data model. Symbol aliases,
+This v1 scheme matches daily canonical tickers from Yahoo or offline CSV snapshots. Symbol aliases,
 renames, strongly correlated assets, intraday instant matching, other registries
 and external analysis are not reconciled automatically. Those limitations must
 not be mistaken for independent investment evidence.
+
+Offline datasets (v0.12) must use the same canonical ticker for the same asset
+across providers. Dataset provenance, including CSV bytes and source/usage/
+adjustment declarations, is part of the frozen protocol and resume comparison.
+Changing those declarations requires a new study/run but does not reset recorded
+date overlap. Relocating an unchanged snapshot is supported. No asset-identity
+mapping service, price-quality certification or license verification is added.
+See [DATASETS.md](DATASETS.md) for the complete offline data contract.
 
 ## Reveal, replay and interruption
 

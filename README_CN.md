@@ -48,6 +48,24 @@ momentum-lab SPY --all-strategies --exhaustive --workers 8
 
 未来发布使用的 distribution name 为 `momentum-research-lab`；Python import 和命令行名称仍为 `momentum_lab` 与 `momentum-lab`。
 
+## v0.12 功能升级
+
+- 新增离线 CSV 数据集：明确记录来源、使用条款、计价货币、日频日历和复权口径，不再只依赖 Yahoo 在线下载；文件有问题时不会自动替换为线上数据。
+- 校验 OHLCV、日期、重复行和 SHA-256；保留原始 CSV 字节，导入时新建目录，不覆盖已有数据。
+- 数据来源信息写入 JSON、Markdown 和 HTML 报告，并锁定到研究协议与断点恢复；移动未变动的数据集不影响恢复，修改数据或声明则需新建实验。
+- 离线数据沿用测试封存、显式揭示和重复访问审计。来源、使用条款和复权标签是用户声明，不代表已验证授权、质量或真实历史收益。
+
+```bash
+momentum-lab data import my-prices.csv --output datasets/spy-v1 --ticker SPY \
+  --source "自行合法取得的数据导出" --license "仅限内部研究" \
+  --currency USD --calendar exchange --price-adjustment split_and_dividend_adjusted
+momentum-lab data inspect datasets/spy-v1/manifest.json
+momentum-lab SPY --dataset datasets/spy-v1/manifest.json --start 2020-01-01 \
+  --study-id spy-local-v1 --run-id spy-local-v1
+```
+
+CSV 格式为 `date,open,high,low,close[,volume]`，日期使用 `YYYY-MM-DD`。本地模式未指定结束日期时使用文件的最后一天，不是今天。请根据自己的文件选择代码和日期，确保有权使用；项目未捆绑商业历史行情。完整契约、复权/成交量限制、揭示和 Python API 见 [DATASETS.md](DATASETS.md)。
+
 ## v0.11 功能升级
 
 - 新增研究登记模式：使用 `--study-id` 固定数据、策略范围与评估规则，默认不计算或展示测试成绩。

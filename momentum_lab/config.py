@@ -66,6 +66,7 @@ class SearchConfig:
     bootstrap_min_observations: int = 60
     study_id: str | None = None
     registry_path: str | None = None
+    dataset: str | None = None
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, Any]) -> "SearchConfig":
@@ -97,6 +98,14 @@ class SearchConfig:
             raise ValueError(f"invalid JSON search config {config_path}: {exc.msg}") from exc
         if not isinstance(values, Mapping):
             raise TypeError("search config must contain a JSON object")
+        # Dataset paths in reusable JSON configs are relative to that config,
+        # not the caller's working directory. Other established path semantics
+        # remain unchanged.
+        if values.get("dataset") is not None:
+            if not isinstance(values["dataset"], str) or not values["dataset"].strip():
+                raise ValueError("dataset must be a non-empty manifest path")
+            path = Path(values["dataset"])
+            values["dataset"] = str((config_path.parent / path).resolve())
         return cls.from_mapping(values)
 
     def to_dict(self) -> dict[str, Any]:

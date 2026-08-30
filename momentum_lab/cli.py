@@ -4,6 +4,7 @@ import argparse
 import sys
 
 from . import __version__
+from .datasets import DatasetError
 from .governance import RegistryError
 from .search import run_search
 from .strategies import STRATEGY_REGISTRY, list_strategies
@@ -12,11 +13,15 @@ from .strategies import STRATEGY_REGISTRY, list_strategies
 def _run_checked(parser, **kwargs):
     try:
         return run_search(**kwargs)
-    except RegistryError as exc:
+    except (RegistryError, DatasetError) as exc:
         parser.error(str(exc))
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "data":
+        from .datasets import main as data_main
+
+        return data_main(sys.argv[2:])
     if len(sys.argv) > 1 and sys.argv[1] == "study":
         from .governance import main as study_main
 
@@ -44,6 +49,9 @@ def main():
     )
     parser.add_argument(
         "--config", type=str, default=None, help="JSON search config; its values take precedence over CLI defaults"
+    )
+    parser.add_argument(
+        "--dataset", help="Offline daily CSV manifest; validates bytes/declarations and never downloads data"
     )
     parser.add_argument("--resume", action="store_true", help="Resume an existing --run-id from its SQLite journal")
     parser.add_argument(
@@ -266,6 +274,7 @@ def main():
         keep_all_results=args.keep_all_results,
         generate_report=args.generate_report,
         config=args.config,
+        dataset=args.dataset,
         resume=args.resume,
         study_id=args.study_id,
         registry_path=args.registry_path,

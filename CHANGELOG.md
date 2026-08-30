@@ -3,6 +3,34 @@
 All notable changes are documented here. The project follows semantic versioning
 for its public Python API and run/checkpoint schema.
 
+## [0.12.0] - 2026-08-30
+
+### Offline datasets and source provenance
+
+- Added `data import`, `data inspect`, `--dataset`, `import_dataset` and
+  `load_dataset` for daily user-supplied CSV research, with no network fallback.
+- Preserve original bytes; reject missing/extra columns, malformed rows,
+  duplicate/unsorted/intraday dates, invalid prices/volume, changed hashes,
+  unsupported manifests, path escapes and CSV symlinks. Imports never overwrite
+  existing output directories. All rows are validated before range slicing.
+- Record explicit source, usage terms, currency, calendar and price-adjustment
+  declarations. Calendar annualization applies consistently to features and
+  evaluation; conflicting overrides fail. Unadjusted/split-only series warn
+  that corporate actions/distributions are not reconstructed.
+- Bind original bytes and declarations into study/resume contracts while
+  allowing relocation of unchanged snapshots. Config-file dataset paths resolve
+  relative to their JSON file. Reports and returned results expose provenance.
+- Preserve development-only candidate isolation, sealed study/reveal semantics
+  and ticker/date observation history across local data sources.
+- Add frozen synthetic CSV validation, malformed-input/provenance/resume tests,
+  bilingual quick starts and an installed-wheel offline lifecycle CI smoke.
+
+No accounting, ranking or uncertainty method changes; engine schema 5, registry
+schema 1 and frozen accounting/statistical references remain unchanged. New
+source/provenance/version identity requires fresh runs when upgrading. Source
+and license declarations are not verified rights, data-quality certification,
+point-in-time evidence or tamper-proof custody. See `DATASETS.md`.
+
 ## [0.11.0] - 2026-08-30
 
 ### Research registration and test-access audit
