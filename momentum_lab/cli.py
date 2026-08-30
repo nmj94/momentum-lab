@@ -1,6 +1,7 @@
 """cli.py - Command-line interface for momentum-lab."""
 
 import argparse
+import sys
 
 from . import __version__
 from .search import run_search
@@ -8,6 +9,10 @@ from .strategies import STRATEGY_REGISTRY, list_strategies
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "benchmark":
+        from .benchmarks import main as benchmark_main
+
+        return benchmark_main(sys.argv[2:])
     parser = argparse.ArgumentParser(
         prog="momentum-lab",
         description="Compare momentum strategies with reproducible out-of-sample evaluation.",
@@ -15,7 +20,8 @@ def main():
         "  momentum-lab GLD                    # Search gold ETF\n"
         "  momentum-lab SPY --quick            # Quick search S&P 500\n"
         "  momentum-lab BTC-USD --workers 4    # Search Bitcoin with 4 cores\n"
-        "  momentum-lab AAPL --strategies tsmom,ma_cross,rsi\n",
+        "  momentum-lab AAPL --strategies tsmom,ma_cross,rsi\n"
+        "  momentum-lab benchmark              # Offline frozen regression suite\n",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
@@ -217,4 +223,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

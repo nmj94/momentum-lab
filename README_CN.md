@@ -48,6 +48,33 @@ momentum-lab SPY --all-strategies --exhaustive --workers 8
 
 未来发布使用的 distribution name 为 `momentum-research-lab`；Python import 和命令行名称仍为 `momentum_lab` 与 `momentum-lab`。
 
+## v0.9 功能升级
+
+- 新增 `momentum-lab benchmark`：4 类离线合成行情 × 4 个固定策略，共 16 个案例，覆盖交易日/自然日、趋势反转、跳空、借券受限及流动性压力。
+- 用 SHA-256 锁定行情与参数假设；比较每根 K 线的完整账本和指标，不只比较期末收益或四舍五入后的夏普比率。
+- 自动生成版本对比 JSON 与 Markdown 报告，记录耗时和内存分配峰值。数值变好或变坏都需要审查，性能阈值可选，参考结果不会自动覆盖。
+- CI 在 Python 3.10—3.13 执行冻结回归并上传报告，还会验证干净 wheel 在源码目录之外能读取内置基准。
+
+### 运行冻结回归（无需联网）
+
+```bash
+# 与随包提供的已复核软件回归参考结果比较
+momentum-lab benchmark --output experiments/benchmarks/check-090
+
+# 在自己的机器上比较两个版本，保留旧版本快照
+momentum-lab benchmark --repeat 3 --output experiments/benchmarks/before
+# 安装待比较的新版本后，使用新的输出目录
+momentum-lab benchmark --repeat 3 \
+  --compare experiments/benchmarks/before/snapshot.json \
+  --output experiments/benchmarks/after
+```
+
+每次输出 `snapshot.json`、`comparison.json` 和 `report.md`。退出码：`0` 表示结果兼容，`1` 表示数值或启用的性能指标发生超限变化，`2` 表示输入无效或不可比较。已有输出目录会拒绝覆盖。
+
+可追加 `--max-slowdown 1.5 --max-memory-growth 1.5` 设置单案例的资源比值上限；两侧必须都有测量结果，随包参考结果不含机器相关的性能数字。内存是 `tracemalloc` 跟踪的分配峰值，不是进程总 RSS。
+
+这些是**合成软件测试数据，不是真实历史收益或样本外有效性的证据**，不会参与策略搜索与选型。详细口径、Python API 和参考结果更新规则见 [BENCHMARKS.md](BENCHMARKS.md)。
+
 ## v0.8 功能升级
 
 - 新增可配置候选预算、淘汰比例和验证资源阶段的确定性 Successive Halving；只有完成全部开发期评估的幸存者才会进入正式排名，但所有阶段评估仍会计入多重检验门槛。

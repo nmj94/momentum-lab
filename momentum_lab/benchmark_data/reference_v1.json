@@ -1,0 +1,160 @@
+{
+  "schema_version": 1,
+  "suite": {
+    "schema_version": 1,
+    "suite_id": "synthetic-core-v1",
+    "data_kind": "synthetic",
+    "provenance": "Project-created, frozen integer-price scenarios. No historical observations, provider downloads, randomness, tuning or investment claims.",
+    "license": "MIT",
+    "calendar_note": "Weekday scenarios omit weekends but do not model exchange holidays. Daily scenarios include every calendar day.",
+    "indicator_cache_size": 32,
+    "risk_free_rate": 0,
+    "backtest": {
+      "cost_bps": 1,
+      "slippage_bps": 0.5,
+      "spread_bps": 2,
+      "execution_lag": 1,
+      "max_leverage": 1.5,
+      "cash_rate": 0.02,
+      "financing_rate": 0.04,
+      "financing_spread": 0.01,
+      "borrow_bps": 50,
+      "short_rebate_rate": 0.005,
+      "initial_capital": 100000,
+      "min_fee": 1
+    },
+    "strategies": [
+      {
+        "id": "cash",
+        "name": "cash",
+        "params": {}
+      },
+      {
+        "id": "buy_and_hold",
+        "name": "buy_and_hold",
+        "params": {}
+      },
+      {
+        "id": "ma_cross",
+        "name": "ma_cross",
+        "params": {
+          "fast": 5,
+          "slow": 20,
+          "long_short": false,
+          "ma_type": "sma",
+          "signal_smooth": 0,
+          "position_size": 1
+        }
+      },
+      {
+        "id": "tsmom",
+        "name": "tsmom",
+        "params": {
+          "lookback": 12,
+          "threshold": 0.002,
+          "long_short": true,
+          "skip_recent": 1,
+          "signal_smooth": 2,
+          "position_size": 1.8
+        }
+      }
+    ],
+    "datasets": [
+      {
+        "annualization": 252,
+        "asset_style": "Equity-like (synthetic)",
+        "backtest": {},
+        "bars": 128,
+        "borrow_unavailable_bars": [],
+        "calendar": "weekdays",
+        "file": "equity_trend_v1.json",
+        "id": "equity_trend",
+        "regime": "Uptrend, selloff and recovery",
+        "sha256": "c42a882b912f0ed8582c1347278f1f8ab0b37c3f37b8186a7dc85811c58b2f35"
+      },
+      {
+        "annualization": 252,
+        "asset_style": "Commodity-like (synthetic)",
+        "backtest": {
+          "borrow_bps": 150,
+          "spread_bps": 8
+        },
+        "bars": 128,
+        "borrow_unavailable_bars": [
+          [
+            65,
+            78
+          ]
+        ],
+        "calendar": "weekdays",
+        "file": "commodity_range_v1.json",
+        "id": "commodity_range",
+        "regime": "Choppy, repeated trend reversals",
+        "sha256": "e3dccf8ef88455f9586f60845be525e681ac20a95b8ae0b6a9943641c9f304f7"
+      },
+      {
+        "annualization": 365,
+        "asset_style": "Crypto-like (synthetic)",
+        "backtest": {
+          "borrow_bps": 300,
+          "slippage_bps": 3,
+          "spread_bps": 12
+        },
+        "bars": 128,
+        "borrow_unavailable_bars": [],
+        "calendar": "daily",
+        "file": "crypto_jumps_v1.json",
+        "id": "crypto_jumps",
+        "regime": "Large jumps, selloffs and short insolvency",
+        "sha256": "8a0c8bdd31a5bca41996dd0b219d848d2992918d8876437a893f3f67c9a210c0"
+      },
+      {
+        "annualization": 252,
+        "asset_style": "Low-liquidity security (synthetic)",
+        "backtest": {
+          "impact_bps": 12,
+          "initial_capital": 1000000,
+          "max_participation": 0.02,
+          "min_fee": 2,
+          "spread_bps": 20
+        },
+        "bars": 128,
+        "borrow_unavailable_bars": [
+          [
+            60,
+            85
+          ]
+        ],
+        "calendar": "weekdays",
+        "file": "illiquid_stress_v1.json",
+        "id": "illiquid_stress",
+        "regime": "Zero-volume bars and partial fills",
+        "sha256": "c6693c86d24e7721e0220135e18bdcfc419438cd5ae35695ae51aad17822b313"
+      }
+    ]
+  },
+  "suite_sha256": "2ccdb94ac7e9f55f3c079d77491f95ed70009b3125a0aa4b3a1250adf8eea8cf",
+  "provenance": {
+    "created_at": "2026-08-30T04:03:34.877713+00:00",
+    "package_version": "0.9.0",
+    "engine_schema_version": 5,
+    "engine_base_commit": "5e2eaf7bd8603a8d4d2914d8b39c771bca1bcc9d",
+    "source_sha256": "0b52d117a44f62e47ef148ac7a12fb80af0f29c4951a8155fc8bea35974aae69",
+    "environment": {
+      "python": "3.12.13",
+      "implementation": "CPython",
+      "platform": "Linux-6.18.35-x86_64-with-glibc2.39",
+      "packages": {
+        "numpy": "2.5.2",
+        "pandas": "3.0.5",
+        "scikit-learn": "1.9.0",
+        "xgboost": "3.4.0",
+        "yfinance": "1.5.2"
+      }
+    }
+  },
+  "measurement": "median wall seconds and maximum tracemalloc peak bytes; includes tracing overhead; not RSS",
+  "repeats": 1,
+  "performance": {},
+  "reference_note": "Captured with the v0.9.0 harness using the unchanged v0.8.0 accounting engine (schema 5). Frozen software-compatibility oracle, not proof of correctness. Resource measurements intentionally omitted."
+}

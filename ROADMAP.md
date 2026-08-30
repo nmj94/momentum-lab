@@ -57,13 +57,29 @@ Delivered in v0.8.0:
 - Candidate isolation now withholds test observations as well as test metrics
   and boundaries until one final selection has been made.
 
-Next scale and evidence work:
+Remaining scale work:
 
 - Optional Optuna integration behind the same sealed-development contract.
 - Optional Parquet/DuckDB analytics exports on top of the SQLite journal.
 - Typed `StrategySpec`, `RunConfig`, `RunResult`, and plugin entry points.
-- Cross-asset and cross-regime frozen benchmark suites.
+
+## v0.9 — Frozen software-regression evidence
+
+Delivered in v0.9.0:
+
+- Offline, SHA-256-locked synthetic OHLCV fixtures covering four asset styles,
+  weekday/daily calendars, trends/reversals, jumps and liquidity stress.
+- Sixteen fixed cash/buy-and-hold/MA/TSMOM cases with complete reference ledgers,
+  strict input compatibility and symmetric numeric-change gates.
+- Version-comparison JSON and Markdown reports; runtime/traced-allocation
+  observations and optional resource limits without automatic rebaselining.
+- Frozen regression CI across Python 3.10—3.13 and clean-wheel fixture checks.
+
+Next evidence work (not delivered by the synthetic regression suite):
+
+- Licensed, frozen historical cross-asset/cross-regime investment benchmarks.
 - Block-bootstrap intervals and correlated effective-trial estimates.
+- Persistent test-reveal records and research preregistration across run IDs.
 
 ## v1.0 — Stable research platform
 

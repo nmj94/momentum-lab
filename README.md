@@ -57,6 +57,43 @@ momentum-lab SPY --all-strategies --exhaustive --workers 8
 The future PyPI distribution name is `momentum-research-lab`; the Python import
 and CLI remain `momentum_lab` and `momentum-lab`.
 
+## What changed in v0.9
+
+- Added `momentum-lab benchmark`: 16 fixed cases over four offline synthetic
+  market scenarios, including daily/weekday calendars and liquidity stress.
+- SHA-256 locks data and assumptions; complete ledgers and metrics are compared
+  with a reviewed reference, not just final returns or rounded Sharpe ratios.
+- Snapshots and Markdown reports expose version differences, runtime and traced
+  allocation peaks. Performance limits are optional; numerical changes in either
+  direction require review. No reference is automatically overwritten.
+- CI now runs frozen regressions on Python 3.10—3.13, publishes reports, and
+  verifies that the fixtures work from a clean wheel outside the source checkout.
+
+### Run frozen regressions (no network needed)
+
+```bash
+# Compare against the bundled software-regression reference
+momentum-lab benchmark --output experiments/benchmarks/check-090
+
+# Compare two versions on your machine; keep the earlier snapshot
+momentum-lab benchmark --repeat 3 --output experiments/benchmarks/before
+# Install the version you want to compare, then use a NEW output directory
+momentum-lab benchmark --repeat 3 \
+  --compare experiments/benchmarks/before/snapshot.json \
+  --output experiments/benchmarks/after
+```
+
+Each run writes `snapshot.json`, `comparison.json` and `report.md`. Exit codes
+are `0` for compatible results, `1` for numerical/resource changes, and `2` for
+invalid or incomparable inputs. Optional `--max-slowdown 1.5` and
+`--max-memory-growth 1.5` require measured snapshots on both sides; the bundled
+reference intentionally contains no machine-specific resource measurements.
+
+These synthetic fixtures check software compatibility, **not historical
+profitability or out-of-sample validity**. They do not tune or select strategies.
+Memory means `tracemalloc` peak allocation, not total process RSS. See
+[BENCHMARKS.md](BENCHMARKS.md) for exact contracts, limitations and reference-update policy.
+
 ## What changed in v0.8
 
 - Added deterministic Successive Halving with configurable candidate budget,

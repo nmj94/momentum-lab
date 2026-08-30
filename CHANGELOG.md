@@ -3,6 +3,31 @@
 All notable changes are documented here. The project follows semantic versioning
 for its public Python API and run/checkpoint schema.
 
+## [0.9.0] - 2026-08-30
+
+### Frozen regressions and experiment comparison
+
+- Added the offline `momentum-lab benchmark` command and Python benchmark API.
+  Four frozen, project-created synthetic OHLCV fixtures exercise weekday/daily
+  calendars, trends/reversals, jumps, short insolvency, borrow restrictions,
+  zero-volume bars, and partial fills across cash, buy-and-hold, MA cross and
+  fixed TSMOM cases. These are software tests, not historical investment evidence.
+- Locked input bytes with SHA-256 and bound all parameters, annualization,
+  cache settings and execution assumptions to a versioned contract hash.
+- Shipped complete reviewed reference ledgers from accounting engine schema 5.
+  Fixed numerical tolerances compare every metric and every bar of targets,
+  positions, returns, equity, turnover, costs, participation and constraints.
+  Better returns are changes too; incomplete or incompatible inputs fail closed.
+- Added portable JSON snapshots, machine-readable differences and Markdown
+  reports with current/reference source identities and runtime environments.
+  New output directories and atomic file writes preserve earlier artifacts.
+- Added fresh-cache repeatability checks, wall-time/tracemalloc observations
+  and opt-in resource ratio gates. Memory is traced allocation, not process RSS.
+- Added frozen-suite gates and downloadable reports to all four CI Python
+  versions, plus fixture verification from a clean installed wheel outside the
+  source checkout. No strategy, selection or accounting semantics changed;
+  the existing search engine/checkpoint schema remains 5.
+
 ## [0.8.0] - 2026-08-29
 
 ### Scale-aware search

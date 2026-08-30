@@ -41,6 +41,15 @@ jobs:
         run: uv run coverage run --source=momentum_lab -m pytest -m "not network" -q
       - name: Enforce coverage floor
         run: uv run coverage report --fail-under=78
+      - name: Compare frozen accounting benchmarks
+        run: uv run momentum-lab benchmark --output benchmark-results
+      - name: Publish regression report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frozen-benchmarks-python-${{ matrix.python-version }}
+          path: benchmark-results/
+          if-no-files-found: warn
 
   package:
     runs-on: ubuntu-latest
@@ -56,7 +65,13 @@ jobs:
           uv venv .wheel-venv
           uv pip install --python .wheel-venv/bin/python dist/*.whl
           .wheel-venv/bin/momentum-lab --version
-          .wheel-venv/bin/python -c "import momentum_lab; assert momentum_lab.__version__ == '0.8.0'"
+          .wheel-venv/bin/python -c "import momentum_lab; assert momentum_lab.__version__ == '0.9.0'"
+      - name: Verify packaged frozen fixtures outside the source checkout
+        run: |
+          wheel_python="$GITHUB_WORKSPACE/.wheel-venv/bin/python"
+          benchmark_workspace="$(mktemp -d)"
+          cd "$benchmark_workspace"
+          "$wheel_python" -m momentum_lab benchmark --output results
 
   network-test:
     if: github.event_name == 'schedule'
