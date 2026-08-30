@@ -5,11 +5,12 @@ import html
 from .reporting import _display, _markdown_cell
 
 LIMITATIONS = (
-    "Fixed ex-post universe, not point-in-time constituent or delisting coverage. "
+    "Fixed ex-post universe or user-declared membership, not verified point-in-time constituent or delisting coverage. "
     "Daily closes/fills are assumed synchronized; equal session-date labels do not prove synchronized markets. "
     "No FX, leverage, shorts, borrow, capacity, nonlinear impact, minimum fees, taxes or broker execution. "
     "Adjustment, source and license fields are user declarations, not independently verified. "
-    "Warm-up cash intervals are included in both performance series. The initial structural zero return is excluded. "
+    "Whole-history and development metrics include warm-up cash intervals; test reports use the documented prior-close anchor. "
+    "The initial structural zero return is excluded. "
     "Target caps apply at rebalances; actual asset weights drift between fills. "
     "The last signal may still be pending: no fill is invented after the final data bar. "
     "Cash uses an effective annual ACT/365 rate; this differs from the single-asset engine's simple ACT/365.25 convention."
@@ -37,6 +38,15 @@ def _tables(summary, metadata):
         )
         for key, label, percent in _METRICS
     ]
+    if "starting_nav" in summary["metrics"]:
+        metrics.insert(
+            0,
+            (
+                "Period starting NAV",
+                _display(summary["metrics"]["starting_nav"]),
+                _display(summary["benchmark_metrics"]["starting_nav"]),
+            ),
+        )
     allocations = [
         (
             ticker,
@@ -65,8 +75,12 @@ def _tables(summary, metadata):
         (ticker, value["source"], value["license"], value["price_adjustment"], value["contract_sha256"])
         for ticker, value in summary["data_provenance"].items()
     ]
-    return [
-        ("Performance (whole history)", ("Metric", "Momentum portfolio", "Equal-weight buy-and-hold"), metrics),
+    tables = [
+        (
+            f"Performance ({summary.get('performance_scope', 'whole history')})",
+            ("Metric", "Momentum portfolio", summary.get("benchmark_label", "Equal-weight buy-and-hold")),
+            metrics,
+        ),
         (
             "Final holdings and last signal",
             ("Asset", "Final realized weight", "Last signal target", "Last signal score"),
@@ -79,6 +93,9 @@ def _tables(summary, metadata):
             sources,
         ),
     ]
+    if summary.get("membership"):
+        tables.append(("Declared membership history", ("Field", "Value"), list(summary["membership"].items())))
+    return tables
 
 
 def render_portfolio_markdown(summary, metadata):

@@ -1,11 +1,16 @@
-# Multi-asset momentum research (v0.13)
+# Multi-asset momentum research (v0.14)
 
-The `portfolio` workflow compares assets against one another and simulates a
+The `portfolio --config ... --acknowledge-history` workflow compares assets against one another and simulates a
 single long-only, unlevered account. This is **fixed-rule, exploratory
 whole-history research**, not parameter selection, a sealed portfolio study,
 independent out-of-sample evidence, or an order to trade. Momentum can suffer
 large losses and prolonged underperformance; this tool does not establish its
 superiority or guarantee investment outcomes.
+
+v0.14 separately adds [registered portfolio studies](PORTFOLIO_STUDIES.md) with
+development-first evaluation and explicit test reveals. Both workflows support
+optional [declared historical membership](MEMBERSHIP.md). The whole-history
+command described here keeps its explicit full-history consent behavior.
 
 ## Run an offline portfolio
 
@@ -80,7 +85,8 @@ and cannot detect previously observed history outside its records.
 
 - The workflow accepts 2–64 distinct canonical tickers; case aliases are
   duplicates. Labels start with a letter, digit or `^` and contain only ticker
-  characters. A fixed universe is used for the entire simulation.
+  characters. The candidate pool is fixed; all candidates are eligible by default.
+  An optional `universe` manifest controls time-varying signal eligibility.
 - All assets must declare the **same currency, calendar, annualization and
   price-adjustment convention**, and contain exactly the same session dates
   after explicit slicing. There is no implicit date intersection, filling,
@@ -99,9 +105,14 @@ and cannot detect previously observed history outside its records.
 
 Source/licensing and adjustment fields are declarations, not independently
 verified facts. A current list of surviving assets is not a point-in-time
-universe: delistings, index membership, symbol changes and availability history
-are not reconstructed. Choosing the universe after seeing returns introduces
+universe. Optional membership is declared, not independently verified; delisting
+settlements, symbol changes and price availability are not reconstructed.
+Choosing the candidate pool after seeing returns introduces
 selection/survivorship bias even if the numerical signals are causal.
+
+All candidates still need complete positive prices even outside membership.
+Pre-IPO gaps or missing delisting/exit prices fail closed; no synthetic quote
+or liquidation value is inserted. A membership removal is not a settlement.
 
 ## Cross-sectional rule
 
@@ -130,6 +141,11 @@ Signals occur daily, or on the first observed session of each new week
 generates a signal, even mid-period. A month-end resample requiring knowledge
 of future data is not used. These are first-session signals, **not** month-end
 signals executed at the next month's open.
+
+With `universe`, ineligible scores are masked and never selected. Membership
+changes after warm-up force an additional signal, subject to the same next-close
+execution delay. An empty member set targets cash. An earlier pending instruction
+can still execute on an event day; there is no retroactive cancellation.
 
 ## Execution and self-financing accounting
 
@@ -182,11 +198,16 @@ implicitly enabled in this separate portfolio engine.
 
 ## Benchmark and descriptive statistics
 
-The baseline is a single equal-weight **buy-and-hold** allocation after the
+Without membership, the baseline is a single equal-weight **buy-and-hold** allocation after the
 same warm-up, using the same prices, delay, costs, cash rate and target cap.
 Its per-asset target is `min(1 / number_of_assets, max_weight)`; it never
 rebalances afterward. It is not a daily equal-weight index, an investable
 external benchmark or a risk-matched comparison.
+
+With membership, the baseline is instead **Membership equal-weight rebalanced**:
+on exactly the strategy's signal dates, target every currently eligible asset
+at `min(1 / eligible_count, max_weight)`, with residual cash and the same delay
+and costs. It does not buy future members early. See [MEMBERSHIP.md](MEMBERSHIP.md).
 
 Both series include warm-up cash intervals. The first structural zero return
 is excluded from statistics, leaving `number_of_bars - 1` return intervals.
@@ -230,12 +251,13 @@ Each run writes:
 | `weights.csv`, `holdings.csv`, `asset_values.csv`, `trades.csv` | Realized asset weights, synthetic units, marked values and signed currency-value trades |
 | `scores.csv`, `targets.csv`, `executed_targets.csv` | Decision inputs, sparse signal targets and delayed executed instructions; blank rows mean no instruction |
 | `benchmark_ledger.csv`, `benchmark_weights.csv` | Matched-warm-up buy-and-hold baseline |
+| `eligibility.csv` (when supplied) | Boolean declared membership mask; the benchmark then rebalances eligible members |
 | `report.md`, `report.html` | Offline readable performance, allocation, source and assumption reports |
 | `summary.json` | Final metrics and allocations; written last as the completion marker |
 
 The SHA-256 research contract binds the recipe, source/version/environment,
 execution assumptions, every dataset's content/declarations, and evaluated
-snapshots. It excludes output/run/registry locations and dataset paths: moving
+snapshots and optional raw/normalized membership hashes. It excludes output/run/registry locations and input paths: moving
 unchanged snapshots does not create different evidence. Original source CSVs
 are not recopied into each portfolio run; retain your imported snapshots.
 There is no overwrite or resume mode in this first portfolio workflow.
@@ -256,8 +278,9 @@ for a failing regression. Tests also exercise causal signal prefixes, cost
 reconciliation, audit ordering and interrupted runs. CI checks Python
 3.10–3.13 and an installed core wheel without optional ML packages.
 
-Next portfolio work requires point-in-time universe/membership data and a
-multi-asset protocol for truly separated development and controlled test
-access. It should precede portfolio parameter search, selection-adjusted
-comparisons, or paper execution. Existing single-asset OOS controls must not
-be presented as a completed multi-asset OOS protocol.
+v0.14 adds two further independent membership/carried-test cases and a separate
+fixed-rule [multi-asset registered workflow](PORTFOLIO_STUDIES.md), bringing the
+frozen software suite to 16 + 6 + 2 cases. Existing accounting schemas are unchanged.
+Next work is verified historical data, unbalanced IPO/delisting histories and
+explicit settlements, then selection-aware portfolio parameter research. These
+controls and forward testing should precede paper or live execution.

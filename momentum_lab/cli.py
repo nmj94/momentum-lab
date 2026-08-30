@@ -43,7 +43,8 @@ def main():
         "  momentum-lab BTC-USD --workers 4    # Search Bitcoin with 4 cores\n"
         "  momentum-lab AAPL --strategies tsmom,ma_cross,rsi\n"
         "  momentum-lab benchmark              # Offline frozen regression suite\n"
-        "  momentum-lab portfolio --help       # Fixed-rule multi-asset research\n",
+        "  momentum-lab portfolio --help       # Fixed-rule multi-asset research\n"
+        "  momentum-lab portfolio study --help # Registered portfolio study\n",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(

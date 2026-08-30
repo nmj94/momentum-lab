@@ -8,7 +8,9 @@ from .datasets import DatasetError, import_dataset, load_dataset
 from .governance import RegistryError, StudyRegistry, TestReuseError
 from .indicators import IndicatorDAG
 from .portfolio import PortfolioError, backtest_portfolio, cross_sectional_momentum, portfolio_metrics
+from .portfolio_governance import PortfolioStudyRegistry
 from .portfolio_research import PortfolioConfig, run_portfolio
+from .portfolio_study import PortfolioStudyConfig, run_portfolio_study
 from .reporting import render_html_report, render_markdown_report
 from .robustness import robustness_check
 from .search import run_search
@@ -19,6 +21,7 @@ from .strategies import (
     list_strategies,
 )
 from .uncertainty import paired_block_bootstrap
+from .universe import load_membership
 
 __all__ = [
     "STRATEGY_REGISTRY",
@@ -27,6 +30,8 @@ __all__ = [
     "MarketDataUnavailableError",
     "PortfolioConfig",
     "PortfolioError",
+    "PortfolioStudyConfig",
+    "PortfolioStudyRegistry",
     "RegimeAware",
     "RegistryError",
     "SearchConfig",
@@ -43,6 +48,7 @@ __all__ = [
     "import_dataset",
     "list_strategies",
     "load_dataset",
+    "load_membership",
     "load_search_config",
     "paired_block_bootstrap",
     "portfolio_metrics",
@@ -51,5 +57,6 @@ __all__ = [
     "render_markdown_report",
     "robustness_check",
     "run_portfolio",
+    "run_portfolio_study",
     "run_search",
 ]

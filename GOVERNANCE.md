@@ -1,4 +1,4 @@
-# Research registration and test access (v0.11+, portfolios in v0.13)
+# Research registration and test access (v0.11+, portfolio studies in v0.14)
 
 The research registry prevents accidental reuse from being labelled as a new
 test. It is a **local observation ledger, not encrypted test-data custody or a
@@ -31,8 +31,44 @@ with a new run ID without clearing observation history.
 Portfolio low-level numerical APIs, like existing single-asset backtests, do
 not manage observation records. A researcher using them is responsible for
 recording their own access; no numerical API certifies fresh OOS evidence.
-Point-in-time universe membership and multi-asset sealed protocols remain
-future work. See [PORTFOLIOS.md](PORTFOLIOS.md) for the accounting/data contract.
+See [PORTFOLIOS.md](PORTFOLIOS.md) for the accounting/data contract. v0.14 adds
+the separate registered portfolio workflow below; verified historical data and
+complete delisting/settlement support remain future work.
+
+## Registered fixed-rule portfolios (v0.14)
+
+`momentum-lab portfolio study` freezes a fixed rule, all candidate snapshots,
+optional membership, development/test boundaries and software identity before
+evaluating development. Test data is withheld from the evaluator until a
+separate explicit reveal. The coordinator still validates/hashes full input
+files; this is not encrypted or custodial concealment.
+
+All candidate test ranges are reserved in **one transaction** before test
+computation, including inactive/never-selected assets. Development records are
+also atomic. One overlap, from any single-asset/portfolio study or whole-history
+run, blocks a fresh group reveal. Interrupted claims remain exposures. A completed
+study reopens its frozen summary and logs a replay; it never silently recalculates.
+The first completed result is pinned even if an earlier concurrent claim finishes
+later. Test books carry holdings, cash and pending instructions across the split.
+
+The base schema/user-version 1, registry identity and old records are preserved.
+Four additive tables (`portfolio_registry_info`, `portfolio_studies`,
+`portfolio_access_batches`, `portfolio_batch_events`) use portfolio extension
+schema 1 and link all asset events to the existing observations table. Study
+namespaces are separate; overlap history is shared. Missing/incomplete extensions
+or corrupted cached groups are rejected, not recreated. Read-only status/list
+never initializes an extension or returns cached metrics.
+
+```bash
+momentum-lab portfolio study --config study.json --run-id development
+momentum-lab portfolio study status relative-momentum-study-v1
+momentum-lab portfolio study --config study.json --run-id test-reveal --reveal-test
+```
+
+See [PORTFOLIO_STUDIES.md](PORTFOLIO_STUDIES.md) for consent/reuse flags, cached
+summary-only recovery, artifacts and APIs, and [MEMBERSHIP.md](MEMBERSHIP.md)
+for declared membership limits. This does not add portfolio parameter selection
+or establish that a first recorded reveal is truly unseen evidence.
 
 ## Two-step research workflow
 

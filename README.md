@@ -57,6 +57,34 @@ momentum-lab SPY --all-strategies --exhaustive --workers 8
 The future PyPI distribution name is `momentum-research-lab`; the Python import
 and CLI remain `momentum_lab` and `momentum-lab`.
 
+## What changed in v0.14
+
+- Added fixed-rule **registered portfolio studies**: develop first, explicitly
+  reveal later, and record all candidate assets' test access atomically in the
+  existing shared registry. Interrupted access and cross-study reuse remain visible.
+- Added declared historical membership with known/effective dates. Both momentum
+  selection and the comparison portfolio respect eligible membership; changes
+  trigger a delayed rebalance even between regular signal dates.
+- Test accounting carries holdings, cash and pending instructions across the
+  boundary, includes the first test return and reports each account's starting
+  NAV. Reopening a completed study uses the frozen summary, never a new backtest.
+- Added two independent frozen membership/boundary cases, lifecycle and concurrent
+  access tests, and an installed core-wheel check. The old 16 + 6 references remain unchanged.
+
+```bash
+# Adapt synthetic examples to aligned snapshots and membership data you may use.
+momentum-lab portfolio study --config examples/portfolio_study_config.json --run-id development
+momentum-lab portfolio study status relative-momentum-study-v1
+momentum-lab portfolio study --config examples/portfolio_study_config.json --run-id test-reveal --reveal-test
+momentum-lab portfolio study benchmark
+```
+
+See [PORTFOLIO_STUDIES.md](PORTFOLIO_STUDIES.md) and [MEMBERSHIP.md](MEMBERSHIP.md).
+This is local workflow/audit control, not proof of untouched OOS data or verified
+point-in-time history. Complete positive aligned prices are still required even
+outside membership; IPO gaps, missing delisting prices and liquidation payouts
+are **not** modeled. No portfolio parameter search or live execution is added.
+
 ## What changed in v0.13
 
 - Added multi-asset cross-sectional momentum: rank relative returns, optionally
@@ -83,7 +111,8 @@ momentum-lab portfolio benchmark
 See [PORTFOLIOS.md](PORTFOLIOS.md) for data alignment, formulas, consent,
 Python APIs, output files and limitations. The target cap can drift between
 rebalances; cash uses effective annual ACT/365, unlike the single-asset engine's
-simple ACT/365.25 convention. Point-in-time membership, portfolio OOS selection,
+simple ACT/365.25 convention. v0.14 adds declared membership and fixed-rule
+registered studies; verified point-in-time data, portfolio parameter selection,
 FX and live execution remain out of scope.
 
 ## What changed in v0.12

@@ -3,6 +3,47 @@
 All notable changes are documented here. The project follows semantic versioning
 for its public Python API and run/checkpoint schema.
 
+## [0.14.0] - 2026-08-30
+
+### Declared historical membership and registered portfolio studies
+
+- Added strict, bounded membership manifests with known/effective dates,
+  duplicate/conflict/redundancy checks, source/license/coverage declarations,
+  raw and normalized SHA-256 provenance, and causal boolean eligibility.
+- Membership changes force next-close signals between normal schedule dates;
+  ineligible scores are masked. The matched-clock comparison portfolio also
+  respects membership, with capped equal-weight rebalancing and residual cash.
+  No-manifest portfolio signals and buy-and-hold behavior remain unchanged.
+- Added `PortfolioStudyConfig`, `run_portfolio_study`, `PortfolioStudyRegistry`
+  and `momentum-lab portfolio study` development/status/list/reveal commands.
+  Freeze rule/data/membership/software before development; pass only copied
+  development prefixes and sanitized rules to the evaluator before consent.
+- Atomically reserve every candidate asset's test exposure in the existing
+  shared registry, including inactive assets. One overlap blocks a fresh group
+  claim. Preserve failed/interrupted history; explicit acknowledged reuse is
+  labelled, never described as virgin OOS evidence.
+- Carry cash, holdings and pending instructions across the test boundary.
+  Export a prior-close anchor, include the first test return, exclude development
+  fees from test totals and disclose both accounts' separate starting NAVs.
+- Pin the first completed summary atomically, including out-of-order concurrent
+  completion. Explicit replays validate frozen inputs and cached group integrity,
+  log every asset and return summaries/reports without recomputing CSV books.
+- Added two independently generated frozen membership/boundary ledgers, strict
+  contract/causality/accounting/concurrency/interruption tests, clean core-wheel
+  lifecycle CI, synthetic examples and English/Chinese documentation.
+
+Compatibility: single-asset engine/checkpoint schema 5, portfolio book schema 1,
+base registry/user-version 1 and the 16 + 6 existing frozen cases are unchanged.
+Portfolio registry tables and study/membership contracts have separate schema 1.
+Older source/version-locked runs still need their original environment; upgrading
+requires new runs/protocols, not silent resume. The coordinator reads/hashes raw
+input files; sealing is a local workflow boundary, not encrypted custody.
+
+Not included: independently verified historical membership, unbalanced IPO or
+delisting histories, missing-price/halts settlement, portfolio parameter search,
+selection-adjusted inference or live trading. Complete positive aligned prices
+remain required outside membership; no missing quote or recovery value is invented.
+
 ## [0.13.0] - 2026-08-30
 
 ### Cross-sectional portfolios and shared-cash research

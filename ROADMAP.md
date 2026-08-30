@@ -139,11 +139,36 @@ Delivered in v0.13.0:
 - Complete CSV books, reproducibility contracts, offline HTML/Markdown reports,
   six frozen exact-rational oracle cases and an installed-wheel lifecycle check.
 
-Remaining portfolio work, before parameter search or paper execution:
+## v0.14 — Declared membership and registered fixed-rule portfolios
 
-- Point-in-time investable universes, listing/delisting and membership history.
-- Multi-asset registered protocols, development-only selection and controlled
-  test access across the whole universe, with selection-aware comparisons.
+Delivered in v0.14.0:
+
+- Strict known-on/effective-on membership manifests, coverage and provenance
+  checks, causal eligibility masks, forced delayed membership rebalances and
+  a membership-aware comparison portfolio.
+- Fixed-rule portfolio study protocols, development-only evaluator inputs,
+  invocation-only test reveals and atomic all-candidate exposure groups sharing
+  the existing single-asset registry/history.
+- Carried holdings/cash/pending instructions at the test boundary, separately
+  rebased period NAVs, first-test-return inclusion and explicit anchor exports.
+- Pinned first-completed summary caches, explicit replay and reuse labels,
+  interruption/concurrent-claim regression tests, two independent frozen
+  membership/boundary cases, bilingual guides and installed core-wheel CI.
+
+Scope: user-declared membership and local audit control, **not** independently
+verified point-in-time data, guaranteed unseen tests, or full IPO/delisting handling.
+All candidates still require balanced positive price histories; missing quotes
+and liquidation proceeds are not invented.
+
+Remaining portfolio work, in order before parameter search or paper execution:
+
+- Verified point-in-time datasets and stable security IDs; explicit listing,
+  delisting, price-availability and cash/stock settlement events with independent
+  ledger cases. Support genuine unbalanced histories without forward-filling
+  absent/illegal fills or silently dropping delisted assets.
+- Development-only multi-asset parameter selection and walk-forward replay
+  under the registered test boundary, with selection-aware comparisons and
+  uncertainty; fixed-rule v0.14 studies do not yet provide this.
 - Shared-clock/provider identity validation; explicit FX and trading-calendar
   models before combining asynchronously traded or differently priced assets.
 - Portfolio liquidity/impact/partial-fill models validated against independent

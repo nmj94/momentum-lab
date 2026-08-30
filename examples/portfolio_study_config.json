@@ -1,0 +1,24 @@
+{
+  "datasets": {
+    "AAA": "../datasets/aaa-v1/manifest.json",
+    "BBB": "../datasets/bbb-v1/manifest.json"
+  },
+  "universe": "membership_history.json",
+  "study_id": "relative-momentum-study-v1",
+  "test_start": "2025-01-02",
+  "lookback": 126,
+  "skip_recent": 0,
+  "top_k": 1,
+  "rebalance": "monthly",
+  "absolute_threshold": 0.0,
+  "max_weight": 0.8,
+  "initial_capital": 100000,
+  "cost_bps": 5,
+  "slippage_bps": 2,
+  "spread_bps": 4,
+  "cash_rate": 0.0,
+  "risk_free_rate": 0.0,
+  "start": "2020-01-02",
+  "end": "2025-12-31",
+  "result_dir": "experiments/portfolio-studies"
+}

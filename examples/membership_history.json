@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "universe_id": "synthetic-example-not-market-data",
+  "source": "Project-authored synthetic example; replace with verified data you may use",
+  "license": "MIT for this synthetic example only",
+  "coverage_start": "2020-01-01",
+  "coverage_end": "2025-12-31",
+  "initial_known_on": "2019-12-31",
+  "initial_members": ["AAA"],
+  "events": [
+    {"ticker": "BBB", "known_on": "2021-12-01", "effective_on": "2022-01-03", "action": "add"},
+    {"ticker": "AAA", "known_on": "2025-05-20", "effective_on": "2025-06-02", "action": "remove"}
+  ]
+}

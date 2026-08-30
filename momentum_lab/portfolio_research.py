@@ -74,6 +74,7 @@ class PortfolioConfig:
     result_dir: str = "experiments/portfolios"
     run_id: str | None = None
     registry_path: str | None = None
+    universe: str | None = None
 
     @classmethod
     def from_mapping(cls, values):
@@ -109,6 +110,10 @@ class PortfolioConfig:
         config.datasets = {
             ticker: str((path.parent / manifest).resolve()) for ticker, manifest in config.datasets.items()
         }
+        if config.universe is not None:
+            if not isinstance(config.universe, str) or not config.universe.strip():
+                raise PortfolioError("universe must be a non-empty local membership manifest path")
+            config.universe = str((path.parent / config.universe).resolve())
         return config
 
     def to_dict(self):
@@ -152,6 +157,25 @@ def _validate_config(config):
         1,
     )
     _number(config.risk_free_rate, "risk_free_rate", exclusive_minimum=-1)
+    if config.universe is not None:
+        if not isinstance(config.universe, (str, Path)) or not str(config.universe).strip():
+            raise PortfolioError("universe must be a non-empty local membership manifest path")
+        config.universe = str(Path(config.universe).resolve())
+    # Normalize copied API recipes so equivalent numeric values lock identically.
+    for name in ("lookback", "skip_recent", "top_k"):
+        setattr(config, name, int(getattr(config, name)))
+    for name in (
+        "max_weight",
+        "cost_bps",
+        "slippage_bps",
+        "spread_bps",
+        "cash_rate",
+        "risk_free_rate",
+        "initial_capital",
+    ):
+        setattr(config, name, float(getattr(config, name)))
+    if config.absolute_threshold is not None:
+        config.absolute_threshold = float(config.absolute_threshold)
     if not isinstance(config.result_dir, (str, Path)) or not str(config.result_dir).strip():
         raise PortfolioError("result_dir must be a non-empty path")
     if config.run_id is not None and (
@@ -196,6 +220,127 @@ def _load_universe(config):
     return prices, provenance, snapshots
 
 
+def _membership(config, prices):
+    if config.universe is None:
+        return None, None
+    from .universe import load_membership
+
+    return load_membership(config.universe, prices.index, prices.columns)
+
+
+def _research_contract(config, provenance, snapshots, membership_source=None):
+    source_root = Path(__file__).resolve().parent.parent
+    return {
+        "recipe": {
+            key: value
+            for key, value in config.to_dict().items()
+            if key not in {"datasets", "result_dir", "run_id", "registry_path", "universe", "study_id"}
+        },
+        "data_provenance": provenance,
+        "evaluated_snapshots": snapshots,
+        "membership": membership_source,
+        "portfolio_engine_schema": PORTFOLIO_ENGINE_SCHEMA,
+        "source_fingerprint": _source_fingerprint(),
+        "package_version": __version__,
+        "environment": _environment_manifest(),
+        "lock_fingerprint": _file_fingerprint(source_root / "uv.lock"),
+        "execution_model": "next_close",
+        "execution_lag": 1,
+        "cash_convention": "effective annual rate, ACT/365",
+        "benchmark": (
+            "membership_equal_weight_at_signal_dates"
+            if membership_source
+            else "equal_weight_buy_and_hold_after_same_warmup_with_same_target_cap"
+        ),
+        "benchmark_label": "Membership equal-weight rebalanced" if membership_source else "Equal-weight buy and hold",
+        "observation_scope": "entire_evaluated_history_is_development",
+    }
+
+
+def _compute_books(config, prices, eligibility=None):
+    plan = cross_sectional_momentum(
+        prices,
+        lookback=config.lookback,
+        skip_recent=config.skip_recent,
+        top_k=config.top_k,
+        rebalance=config.rebalance,
+        absolute_threshold=config.absolute_threshold,
+        max_weight=config.max_weight,
+        eligibility=eligibility,
+    )
+    execution = {
+        name: getattr(config, name)
+        for name in ("initial_capital", "cost_bps", "slippage_bps", "spread_bps", "cash_rate")
+    }
+    execution["execution_lag"] = 1
+    result = backtest_portfolio(plan["targets"], prices, **execution)
+    benchmark_targets = pd.DataFrame(np.nan, index=prices.index, columns=prices.columns)
+    signals = plan["rebalance"].loc[lambda values: values].index
+    if eligibility is None:
+        benchmark_targets.loc[signals[0]] = min(1.0 / len(prices.columns), config.max_weight)
+    else:
+        for session in signals:
+            active = eligibility.loc[session]
+            benchmark_targets.loc[session] = 0.0
+            if active.any():
+                benchmark_targets.loc[session, active.index[active]] = min(1.0 / int(active.sum()), config.max_weight)
+    benchmark = backtest_portfolio(benchmark_targets, prices, **execution)
+    return {"plan": plan, "result": result, "benchmark": benchmark, "eligibility": eligibility}
+
+
+def _summarize_books(config, prices, books, metadata):
+    plan, result, benchmark = (books[key] for key in ("plan", "result", "benchmark"))
+    last_signal = plan["rebalance"].loc[lambda values: values].index[-1]
+    execution_dates = result["ledger"].loc[lambda frame: frame["rebalance_executed"]].index
+    options = {"annualization": metadata["annualization"], "risk_free_rate": config.risk_free_rate}
+    return {
+        "run_id": metadata["run_id"],
+        "status": "completed",
+        "research_status": "exploratory_full_history",
+        "history_notice": HISTORY_NOTICE,
+        "history_acknowledged": True,
+        "assets": list(prices.columns),
+        "data_start": str(prices.index[0].date()),
+        "data_end": str(prices.index[-1].date()),
+        "n_bars": len(prices),
+        "warmup_bars": config.lookback,
+        "currency": metadata["currency"],
+        "contract_sha256": metadata["contract_sha256"],
+        "data_provenance": metadata["data_provenance"],
+        "membership": metadata.get("membership"),
+        "benchmark_label": metadata["benchmark_label"],
+        "metrics": portfolio_metrics(result, **options),
+        "benchmark_metrics": portfolio_metrics(benchmark, **options),
+        "latest_weights": result["weights"].iloc[-1].to_dict(),
+        "latest_cash_weight": float(result["ledger"]["cash_weight"].iloc[-1]),
+        "last_signal_date": str(last_signal.date()),
+        "last_execution_date": str(execution_dates[-1].date()) if len(execution_dates) else None,
+        "last_signal_targets": plan["targets"].loc[last_signal].to_dict(),
+        "last_signal_scores": {
+            key: None if pd.isna(value) else float(value) for key, value in plan["scores"].loc[last_signal].items()
+        },
+    }
+
+
+def _book_exports(books):
+    plan, result, benchmark = (books[key] for key in ("plan", "result", "benchmark"))
+    exports = {
+        "ledger.csv": result["ledger"],
+        "weights.csv": result["weights"],
+        "holdings.csv": result["holdings"],
+        "asset_values.csv": result["asset_values"],
+        "trades.csv": result["trades"],
+        "targets.csv": plan["targets"],
+        "scores.csv": plan["scores"],
+        "executed_targets.csv": result["executed_targets"],
+        "benchmark_ledger.csv": benchmark["ledger"],
+        "benchmark_weights.csv": benchmark["weights"],
+    }
+    if books["eligibility"] is not None:
+        exports["eligibility.csv"] = books["eligibility"]
+    return exports
+
+
 def run_portfolio(config, *, acknowledge_history=False):
     """Run a fixed, long-only full-history recipe and export an auditable book.
 
@@ -211,6 +356,7 @@ def run_portfolio(config, *, acknowledge_history=False):
     config = load_portfolio_config(config)
     _validate_config(config)
     prices, provenance, snapshots = _load_universe(config)
+    eligibility, membership_source = _membership(config, prices)
     run_id = config.run_id or f"portfolio_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{uuid4().hex[:8]}"
     output = Path(config.result_dir) / run_id
     if output.exists():
@@ -226,26 +372,7 @@ def run_portfolio(config, *, acknowledge_history=False):
     recipe["result_dir"] = str(Path(config.result_dir).resolve())
     recipe["run_id"] = run_id
     recipe["registry_path"] = str(registry.path)
-    source_root = Path(__file__).resolve().parent.parent
-    contract = {
-        "recipe": {
-            key: value
-            for key, value in recipe.items()
-            if key not in {"datasets", "result_dir", "run_id", "registry_path"}
-        },
-        "data_provenance": provenance,
-        "evaluated_snapshots": snapshots,
-        "portfolio_engine_schema": PORTFOLIO_ENGINE_SCHEMA,
-        "source_fingerprint": _source_fingerprint(),
-        "package_version": __version__,
-        "environment": _environment_manifest(),
-        "lock_fingerprint": _file_fingerprint(source_root / "uv.lock"),
-        "execution_model": "next_close",
-        "execution_lag": 1,
-        "cash_convention": "effective annual rate, ACT/365",
-        "benchmark": "equal_weight_buy_and_hold_after_same_warmup_with_same_target_cap",
-        "observation_scope": "entire_evaluated_history_is_development",
-    }
+    contract = _research_contract(config, provenance, snapshots, membership_source)
     contract_hash = hashlib.sha256(
         json.dumps(contract, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8")
     ).hexdigest()
@@ -279,69 +406,9 @@ def run_portfolio(config, *, acknowledge_history=False):
             run_path=output,
             study_id=None,
         )
-    plan = cross_sectional_momentum(
-        prices,
-        lookback=config.lookback,
-        skip_recent=config.skip_recent,
-        top_k=config.top_k,
-        rebalance=config.rebalance,
-        absolute_threshold=config.absolute_threshold,
-        max_weight=config.max_weight,
-    )
-    execution = {
-        "initial_capital": config.initial_capital,
-        "cost_bps": config.cost_bps,
-        "slippage_bps": config.slippage_bps,
-        "spread_bps": config.spread_bps,
-        "cash_rate": config.cash_rate,
-        "execution_lag": 1,
-    }
-    result = backtest_portfolio(plan["targets"], prices, **execution)
-    benchmark_targets = pd.DataFrame(np.nan, index=prices.index, columns=prices.columns)
-    first_signal = plan["rebalance"].loc[lambda values: values].index[0]
-    benchmark_targets.loc[first_signal] = min(1.0 / len(prices.columns), config.max_weight)
-    benchmark = backtest_portfolio(benchmark_targets, prices, **execution)
-    annualization = first_source["annualization"]
-    metrics = portfolio_metrics(result, annualization=annualization, risk_free_rate=config.risk_free_rate)
-    benchmark_metrics = portfolio_metrics(benchmark, annualization=annualization, risk_free_rate=config.risk_free_rate)
-    last_signal = plan["rebalance"].loc[lambda values: values].index[-1]
-    execution_dates = result["ledger"].loc[lambda frame: frame["rebalance_executed"]].index
-    summary = {
-        "run_id": run_id,
-        "status": "completed",
-        "research_status": "exploratory_full_history",
-        "history_notice": HISTORY_NOTICE,
-        "history_acknowledged": True,
-        "assets": list(prices.columns),
-        "data_start": metadata["data_start"],
-        "data_end": metadata["data_end"],
-        "n_bars": len(prices),
-        "warmup_bars": config.lookback,
-        "currency": first_source["currency"],
-        "contract_sha256": contract_hash,
-        "data_provenance": provenance,
-        "metrics": metrics,
-        "benchmark_metrics": benchmark_metrics,
-        "latest_weights": result["weights"].iloc[-1].to_dict(),
-        "latest_cash_weight": float(result["ledger"]["cash_weight"].iloc[-1]),
-        "last_signal_date": str(last_signal.date()),
-        "last_execution_date": str(execution_dates[-1].date()) if len(execution_dates) else None,
-        "last_signal_targets": plan["targets"].loc[last_signal].to_dict(),
-        "last_signal_scores": plan["scores"].loc[last_signal].to_dict(),
-    }
-    exports = {
-        "ledger.csv": result["ledger"],
-        "weights.csv": result["weights"],
-        "holdings.csv": result["holdings"],
-        "asset_values.csv": result["asset_values"],
-        "trades.csv": result["trades"],
-        "targets.csv": plan["targets"],
-        "scores.csv": plan["scores"],
-        "executed_targets.csv": result["executed_targets"],
-        "benchmark_ledger.csv": benchmark["ledger"],
-        "benchmark_weights.csv": benchmark["weights"],
-    }
-    for name, frame in exports.items():
+    books = _compute_books(config, prices, eligibility)
+    summary = _summarize_books(config, prices, books, metadata)
+    for name, frame in _book_exports(books).items():
         _write_frame_atomic(frame.reset_index(), output / name)
     _write_text_atomic(output / "report.md", render_portfolio_markdown(summary, metadata))
     _write_text_atomic(output / "report.html", render_portfolio_html(summary, metadata))
@@ -352,10 +419,14 @@ def run_portfolio(config, *, acknowledge_history=False):
 
 
 def main(argv=None):
+    if argv and argv[0] == "study":
+        from .portfolio_study import main as study_main
+
+        return study_main(argv[1:])
     parser = argparse.ArgumentParser(
         prog="momentum-lab portfolio",
         description=HISTORY_NOTICE,
-        epilog="Frozen software ledger check: momentum-lab portfolio benchmark",
+        epilog="Frozen software ledger check: momentum-lab portfolio benchmark. Registered workflow: momentum-lab portfolio study --help",
     )
     if argv and argv[0] == "benchmark":
         parser.parse_args(argv[1:])

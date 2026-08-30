@@ -111,6 +111,7 @@ def cross_sectional_momentum(
     rebalance="monthly",
     absolute_threshold=0.0,
     max_weight=1.0,
+    eligibility=None,
 ):
     """Rank assets using ``P[t-skip_recent] / P[t-lookback] - 1``.
 
@@ -119,6 +120,7 @@ def cross_sectional_momentum(
     plus the first fully warmed-up session. Ties break by uppercase ticker.
     Each selected asset gets min(1/top_k, max_weight); empty slots stay in cash.
     The cap is a REBALANCE TARGET cap; actual weights drift between fills.
+    Optional boolean membership changes force an additional delayed rebalance.
     """
     validate_momentum_options(lookback, skip_recent, top_k, rebalance, absolute_threshold, max_weight)
     prices = _prices(prices)
@@ -130,17 +132,30 @@ def cross_sectional_momentum(
         scores = prices.shift(skip_recent) / prices.shift(lookback) - 1.0
     if not np.isfinite(scores.iloc[lookback:].to_numpy()).all():
         raise PortfolioError("Momentum calculation produced non-finite scores")
+    if eligibility is not None:
+        if not isinstance(eligibility, pd.DataFrame) or not eligibility.index.equals(prices.index):
+            raise PortfolioError("Eligibility dates must match price dates exactly")
+        eligibility = eligibility.copy()
+        eligibility.columns = _symbols(eligibility.columns)
+        if set(eligibility.columns) != set(prices.columns):
+            raise PortfolioError("Eligibility assets must match price assets exactly")
+        if any(not pd.api.types.is_bool_dtype(dtype) for dtype in eligibility.dtypes) or eligibility.isna().any().any():
+            raise PortfolioError("Eligibility must contain complete boolean values")
+        eligibility = eligibility.reindex(columns=prices.columns).astype(bool)
+        scores = scores.where(eligibility)
     if rebalance == "daily":
         flags = np.ones(len(prices), dtype=bool)
     else:
         periods = prices.index.to_period("M" if rebalance == "monthly" else "W-SUN")
         flags = np.r_[True, periods[1:] != periods[:-1]]
+    if eligibility is not None:
+        flags |= eligibility.ne(eligibility.shift()).any(axis=1).to_numpy()
     flags[:lookback] = False
     flags[lookback] = True
     targets = pd.DataFrame(np.nan, index=prices.index, columns=prices.columns)
     weight = min(1.0 / top_k, float(max_weight))
     for row in np.flatnonzero(flags):
-        values = scores.iloc[row]
+        values = scores.iloc[row].dropna()
         eligible = values if absolute_threshold is None else values[values > absolute_threshold]
         # Stable sorting preserves the pre-sorted ticker order for exact ties.
         selected = eligible.sort_values(ascending=False, kind="stable").index[:top_k]

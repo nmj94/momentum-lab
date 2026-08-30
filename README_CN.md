@@ -48,6 +48,23 @@ momentum-lab SPY --all-strategies --exhaustive --workers 8
 
 未来发布使用的 distribution name 为 `momentum-research-lab`；Python import 和命令行名称仍为 `momentum_lab` 与 `momentum-lab`。
 
+## v0.14 功能升级
+
+- 新增**组合级研究封存**：先固定规则并评估开发期，再通过单独命令显式揭示测试期。计算测试结果前，以一个事务记录所有候选资产的访问，兼容已有单资产及全历史组合研究记录。
+- 支持带公告日、生效日的历史成分名单。动量策略和比较基准都遵守当时的成员资格；名单变化可触发额外调仓，但仍延迟到下一交易日收盘成交。
+- 测试期承接已有持仓、现金及待执行指令，计入第一天收益，分别披露策略和基准的期初净值。同一研究再次查看复用已固定的结果，并记录重放，不重新回测。
+- 新增 2 组独立核算的名单／测试边界基准、完整流程与并发审计测试，以及独立安装包验收；原有 16 + 6 组软件基准不变。
+
+```bash
+# 示例中的 AAA/BBB 和名单事件为合成示例；请替换为合法取得、严格对齐的数据。
+momentum-lab portfolio study --config examples/portfolio_study_config.json --run-id development
+momentum-lab portfolio study status relative-momentum-study-v1
+momentum-lab portfolio study --config examples/portfolio_study_config.json --run-id test-reveal --reveal-test
+momentum-lab portfolio study benchmark
+```
+
+详细用法见 [PORTFOLIO_STUDIES.md](PORTFOLIO_STUDIES.md) 和 [MEMBERSHIP.md](MEMBERSHIP.md)。封存是本地流程与审计控制，不证明数据从未被观察过；历史名单是用户声明，并非独立验证的历史数据。当前仍要求所有候选资产在完整区间内都有正价格，包括非成员期间；**IPO 前缺价、退市缺价及清算分配尚不支持**，不会凭空补价或假设零回收。尚无组合参数搜索或实盘交易。
+
 ## v0.13 功能升级
 
 - 新增多资产横截面动量：比较资产间的历史涨幅，按排名选择前 K 个持仓，可配置正动量过滤、目标权重上限及日/周/月频调仓；不够入选的名额保留为现金。
@@ -63,7 +80,7 @@ momentum-lab portfolio --config examples/portfolio_config.json --acknowledge-his
 momentum-lab portfolio benchmark
 ```
 
-完整公式、Python API、数据契约和输出说明见 [PORTFOLIOS.md](PORTFOLIOS.md)。权重上限只约束调仓目标，实际权重可能漂移超限。组合现金采用 ACT/365 年有效利率复利，与原单资产引擎的 ACT/365.25 单利不同。历史成分股/退市覆盖、组合封存测试、外汇换算和实盘尚未实现；合成基准用于检验软件，不是收益承诺。
+完整公式、Python API、数据契约和输出说明见 [PORTFOLIOS.md](PORTFOLIOS.md)。权重上限只约束调仓目标，实际权重可能漂移超限。组合现金采用 ACT/365 年有效利率复利，与原单资产引擎的 ACT/365.25 单利不同。v0.14 增加了声明式历史名单和固定规则组合封存；已验证的历史数据、完整退市处理、组合参数选择、外汇换算和实盘仍属后续工作。合成基准用于检验软件，不是收益承诺。
 
 ## v0.12 功能升级
 
