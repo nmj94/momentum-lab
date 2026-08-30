@@ -75,10 +75,22 @@ Delivered in v0.9.0:
   observations and optional resource limits without automatic rebaselining.
 - Frozen regression CI across Python 3.10—3.13 and clean-wheel fixture checks.
 
-Next evidence work (not delivered by the synthetic regression suite):
+## v0.10 — Conditional return uncertainty
+
+Delivered in v0.10.0:
+
+- Paired circular block-bootstrap percentile intervals for selected-strategy
+  and buy-and-hold annualized means/Sharpes and paired mean excess returns.
+- Separate post-selection validation/test diagnostics, fixed recorded seeds,
+  return hashes, bounded batches, work limits and explicit unavailable states.
+- Resume-locked configuration, CLI controls and Markdown/HTML report sections.
+- Independent scalar-oracle frozen tests; existing ranking/accounting baselines
+  remain unchanged. These intervals are not selection-adjusted evidence.
+
+Next evidence work:
 
 - Licensed, frozen historical cross-asset/cross-regime investment benchmarks.
-- Block-bootstrap intervals and correlated effective-trial estimates.
+- Correlated effective-trial estimates and selection-aware uncertainty.
 - Persistent test-reveal records and research preregistration across run IDs.
 
 ## v1.0 — Stable research platform

@@ -65,13 +65,27 @@ jobs:
           uv venv .wheel-venv
           uv pip install --python .wheel-venv/bin/python dist/*.whl
           .wheel-venv/bin/momentum-lab --version
-          .wheel-venv/bin/python -c "import momentum_lab; assert momentum_lab.__version__ == '0.9.0'"
+          .wheel-venv/bin/python -c "import momentum_lab; assert momentum_lab.__version__ == '0.10.0'"
       - name: Verify packaged frozen fixtures outside the source checkout
         run: |
           wheel_python="$GITHUB_WORKSPACE/.wheel-venv/bin/python"
           benchmark_workspace="$(mktemp -d)"
           cd "$benchmark_workspace"
           "$wheel_python" -m momentum_lab benchmark --output results
+          "$wheel_python" - <<'PY'
+          import json
+          import numpy as np
+          import pandas as pd
+          from momentum_lab import paired_block_bootstrap
+
+          rng = np.random.Generator(np.random.PCG64(17))
+          strategy = pd.Series(rng.normal(0.001, 0.01, 160))
+          benchmark = strategy * 0.9 + pd.Series(rng.normal(0, 0.001, 160))
+          result = paired_block_bootstrap(strategy, benchmark, n_resamples=200)
+          assert result["status"] == "ok"
+          assert result["statistics"]["annualized_mean_excess"]["ci"][0] is not None
+          json.dumps(result, allow_nan=False)
+          PY
 
   network-test:
     if: github.event_name == 'schedule'

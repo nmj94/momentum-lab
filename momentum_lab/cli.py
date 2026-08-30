@@ -126,6 +126,22 @@ def main():
     parser.add_argument("--min-val-bars", type=int, default=60, help="Minimum validation observations")
     parser.add_argument("--min-val-trades", type=int, default=1, help="Minimum validation trades")
     parser.add_argument("--min-val-exposure", type=float, default=0.01, help="Minimum mean validation exposure")
+    parser.add_argument(
+        "--no-bootstrap",
+        dest="bootstrap",
+        action="store_false",
+        default=True,
+        help="Disable post-selection uncertainty diagnostics (ranking is unaffected)",
+    )
+    parser.add_argument("--bootstrap-resamples", type=int, default=2000, help="Fixed bootstrap repetitions (200-20000)")
+    parser.add_argument("--bootstrap-block-length", type=int, default=10, help="Circular block length in bars")
+    parser.add_argument("--bootstrap-confidence", type=float, default=0.95, help="Bootstrap confidence level")
+    parser.add_argument(
+        "--bootstrap-seed", type=int, default=42, help="Fixed bootstrap seed, chosen before seeing results"
+    )
+    parser.add_argument(
+        "--bootstrap-min-observations", type=int, default=60, help="Minimum observations for an interval"
+    )
     parser.add_argument("--start", type=str, default="2004-01-01", help="Data start date")
     parser.add_argument("--end", type=str, default=None, help="Data end date (default: today)")
     parser.add_argument("--refresh", action="store_true", help="Ignore cached data and re-download from Yahoo")
@@ -200,6 +216,12 @@ def main():
         min_validation_bars=args.min_val_bars,
         min_validation_trades=args.min_val_trades,
         min_validation_exposure=args.min_val_exposure,
+        bootstrap=args.bootstrap,
+        bootstrap_resamples=args.bootstrap_resamples,
+        bootstrap_block_length=args.bootstrap_block_length,
+        bootstrap_confidence=args.bootstrap_confidence,
+        bootstrap_seed=args.bootstrap_seed,
+        bootstrap_min_observations=args.bootstrap_min_observations,
         workers=args.workers,
         quick=args.quick,
         search_method=args.search_method,

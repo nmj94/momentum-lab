@@ -48,6 +48,28 @@ momentum-lab SPY --all-strategies --exhaustive --workers 8
 
 未来发布使用的 distribution name 为 `momentum-research-lab`；Python import 和命令行名称仍为 `momentum_lab` 与 `momentum-lab`。
 
+## v0.10 功能升级
+
+- 对最终选定策略新增配对区块 Bootstrap 置信区间，覆盖算术年化平均收益、夏普比率，以及相对买入持有的年化平均超额收益；验证期与测试期分别计算。
+- 新结果只作选型后的诊断，不改变候选排名、现有解析夏普区间、多重检验门槛或回测账本。
+- 报告记录随机种子、区块长度、样本量和无法估计的原因；不悄悄删除缺失观测或未定义的重采样结果，续跑时锁定相关参数。
+
+```bash
+# 默认：2000 次重采样、10 根 K 线的循环区块、95% 区间、种子 42
+momentum-lab GLD
+
+# 请在查看结果之前确定参数，不要根据测试期表现调整
+momentum-lab GLD --bootstrap-resamples 2000 --bootstrap-block-length 20 \
+  --bootstrap-confidence 0.95 --bootstrap-seed 42
+
+# 关闭区间估计，候选排名保持不变
+momentum-lab GLD --no-bootstrap
+```
+
+结果位于最终 `summary.json` 和 Python 返回值的 `bootstrap_diagnostics` 中，同时展示在 Markdown/HTML 报告里。默认至少需要 60 个观测及 5 个名义区块；样本不足、零波动、退化重采样或超出计算预算时会说明原因，不编造精确区间。
+
+方法假设收益近似平稳，**不能修正策略筛选偏差或反复查看测试集造成的泄漏**。算术年化平均收益不是 CAGR。完整口径及 Python API 见 [UNCERTAINTY.md](UNCERTAINTY.md)。
+
 ## v0.9 功能升级
 
 - 新增 `momentum-lab benchmark`：4 类离线合成行情 × 4 个固定策略，共 16 个案例，覆盖交易日/自然日、趋势反转、跳空、借券受限及流动性压力。

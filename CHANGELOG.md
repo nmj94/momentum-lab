@@ -3,6 +3,32 @@
 All notable changes are documented here. The project follows semantic versioning
 for its public Python API and run/checkpoint schema.
 
+## [0.10.0] - 2026-08-30
+
+### Conditional return uncertainty
+
+- Added paired circular moving-block percentile intervals for unrounded Sharpe,
+  arithmetic annualized mean return, buy-and-hold statistics and annualized
+  mean excess return. Both series share every resampling index.
+- Final selected-strategy validation and test windows are diagnosed separately
+  using existing net-return ledgers, without refitting, replaying trades,
+  reselecting candidates or joining the two windows.
+- Added recorded PCG64 seeds, block lengths, confidence levels, return-snapshot
+  hashes, sample counts, valid-replicate counts and explicit unavailable states.
+  Short samples, near-zero variance, degenerate draws and work-budget limits
+  never produce fabricated intervals or silently discard observations/draws.
+- Added bounded batches and a 50-million-drawn-cell work limit, validated before
+  resampling. Bootstrap options are CLI/configurable and resume-locked.
+- Added Markdown/HTML uncertainty sections alongside the existing analytic
+  Sharpe interval, with explicit post-selection and stationarity limitations.
+- Added a frozen correlated-return reference computed by an independent scalar
+  oracle, paired/index/causality/configuration tests and a clean-wheel API smoke.
+
+Existing candidate ranking, multiple-testing penalties, backtest accounting,
+the 16 frozen software benchmarks and engine/checkpoint schema 5 are unchanged.
+These conditional intervals do not correct strategy selection bias or repeated
+holdout access and do not establish historical or future profitability.
+
 ## [0.9.0] - 2026-08-30
 
 ### Frozen regressions and experiment comparison

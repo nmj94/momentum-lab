@@ -1,2 +1,3 @@
 # Frozen fixture hashes must survive Windows checkouts unchanged.
 momentum_lab/benchmark_data/*.json text eol=lf
+tests/fixtures/*.json text eol=lf

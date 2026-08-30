@@ -134,7 +134,12 @@ corruption/change injections to check that the harness actually fails.
    benchmark. CI uploads `frozen-benchmarks-python-*` artifacts even after a
    comparison failure when reports are available.
 
+v0.10.0 additionally ships an independent scalar-oracle correlated-return fixture
+in `tests/fixtures/block_bootstrap_v1.json`; it tests the uncertainty calculation,
+not empirical coverage or investment validity. The original 16 ledgers remain
+unchanged. See [UNCERTAINTY.md](UNCERTAINTY.md) for the statistical contract.
+
 Future work remains: licensed historical cross-asset/regime benchmarks, search
-selection benchmarks, block-bootstrap uncertainty, correlated-trial estimates,
+selection benchmarks, correlated-trial estimates, selection-aware uncertainty,
 and persistent out-of-sample reveal governance. This small fixed synthetic suite
 is not a substitute for any of those, or for prospective paper trading.

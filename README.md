@@ -57,6 +57,36 @@ momentum-lab SPY --all-strategies --exhaustive --workers 8
 The future PyPI distribution name is `momentum-research-lab`; the Python import
 and CLI remain `momentum_lab` and `momentum-lab`.
 
+## What changed in v0.10
+
+- Final selected strategies now receive paired block-bootstrap confidence
+  intervals for arithmetic annualized mean return and Sharpe, plus mean excess
+  return against buy-and-hold. Validation and test windows remain separate.
+- These are post-selection diagnostics only: existing ranking, analytic Sharpe
+  intervals, multiple-testing penalties and backtest accounting are unchanged.
+- Reports record seeds, block lengths, sample sizes and unavailable reasons.
+  Missing observations are rejected, and undefined resamples are not discarded.
+  Bootstrap options are locked when resuming a run.
+
+```bash
+# Defaults: 2000 replicates, 10-bar circular blocks, 95% intervals, seed 42.
+momentum-lab GLD
+
+# Choose and record settings BEFORE observing the results
+momentum-lab GLD --bootstrap-resamples 2000 --bootstrap-block-length 20 \
+  --bootstrap-confidence 0.95 --bootstrap-seed 42
+
+# Skip interval estimation; candidate ranking is identical
+momentum-lab GLD --no-bootstrap
+```
+
+Find `bootstrap_diagnostics` in the final `summary.json`, Python return value,
+and uncertainty sections in `report.md` / `report.html`. Intervals require at
+least 60 observations and five nominal blocks by default. They assume approximate
+stationarity and **do not correct selection bias or repeated test access**.
+Arithmetic annualized mean return is not CAGR. Details and Python API:
+[UNCERTAINTY.md](UNCERTAINTY.md).
+
 ## What changed in v0.9
 
 - Added `momentum-lab benchmark`: 16 fixed cases over four offline synthetic

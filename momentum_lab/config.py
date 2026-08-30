@@ -58,6 +58,12 @@ class SearchConfig:
     halving_factor: int = 3
     halving_stages: int = 3
     indicator_cache_size: int = 256
+    bootstrap: bool = True
+    bootstrap_resamples: int = 2000
+    bootstrap_block_length: int = 10
+    bootstrap_confidence: float = 0.95
+    bootstrap_seed: int = 42
+    bootstrap_min_observations: int = 60
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, Any]) -> "SearchConfig":

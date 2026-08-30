@@ -33,6 +33,7 @@ from .indicators import IndicatorDAG
 from .reporting import render_html_report, render_markdown_report
 from .robustness import robustness_check
 from .strategies import CLASSIC_STRATEGIES, STRATEGY_REGISTRY, get_strategy
+from .uncertainty import BOOTSTRAP_METHOD, BOOTSTRAP_WARNING, paired_block_bootstrap, validate_bootstrap_options
 
 try:
     from tqdm import tqdm
@@ -654,6 +655,12 @@ _RESUME_COMPAT_FIELDS = (
     "min_validation_bars",
     "min_validation_trades",
     "min_validation_exposure",
+    "bootstrap",
+    "bootstrap_resamples",
+    "bootstrap_block_length",
+    "bootstrap_confidence",
+    "bootstrap_seed",
+    "bootstrap_min_observations",
 )
 
 
@@ -1216,6 +1223,12 @@ def run_search(
     halving_factor=3,
     halving_stages=3,
     indicator_cache_size=256,
+    bootstrap=True,
+    bootstrap_resamples=2000,
+    bootstrap_block_length=10,
+    bootstrap_confidence=0.95,
+    bootstrap_seed=42,
+    bootstrap_min_observations=60,
 ):
     """Compare momentum strategies for a ticker.
 
@@ -1259,6 +1272,14 @@ def run_search(
         halving_stages: Maximum number of validation-resource stages.
         indicator_cache_size: Maximum shared indicator nodes per process;
             zero disables the indicator DAG cache.
+        bootstrap: Report post-selection paired block-bootstrap diagnostics;
+            never used for candidate ranking or parameter sensitivity.
+        bootstrap_resamples: Fixed number of resamples (200-20000).
+        bootstrap_block_length: Circular block length in observations.
+        bootstrap_confidence: Percentile interval confidence level in (0, 1).
+        bootstrap_seed: Reproducible PCG64 seed, chosen before inspecting results.
+        bootstrap_min_observations: Minimum observations; also requires at least
+            five nominal non-overlapping blocks in each reported window.
         top_n: Number of top results to keep.
         start: Data start date.
         end: Data end date. None = today.
@@ -1317,6 +1338,12 @@ def run_search(
         halving_factor = configured["halving_factor"]
         halving_stages = configured["halving_stages"]
         indicator_cache_size = configured["indicator_cache_size"]
+        bootstrap = configured["bootstrap"]
+        bootstrap_resamples = configured["bootstrap_resamples"]
+        bootstrap_block_length = configured["bootstrap_block_length"]
+        bootstrap_confidence = configured["bootstrap_confidence"]
+        bootstrap_seed = configured["bootstrap_seed"]
+        bootstrap_min_observations = configured["bootstrap_min_observations"]
         top_n = configured["top_n"]
         start = configured["start"]
         end = configured["end"]
@@ -1329,6 +1356,24 @@ def run_search(
         generate_report = configured["generate_report"]
 
     annualization = infer_annualization(ticker) if annualization is None else annualization
+
+    if not isinstance(bootstrap, (bool, np.bool_)):
+        raise TypeError("bootstrap must be boolean")
+    bootstrap_options = {
+        "n_resamples": bootstrap_resamples,
+        "block_length": bootstrap_block_length,
+        "confidence_level": bootstrap_confidence,
+        "seed": bootstrap_seed,
+        "min_observations": bootstrap_min_observations,
+    }
+    validate_bootstrap_options(**bootstrap_options)
+    bootstrap_diagnostics = {
+        "status": "no_selection" if bootstrap else "disabled",
+        "method": BOOTSTRAP_METHOD,
+        "used_for_selection": False,
+        "warning": BOOTSTRAP_WARNING,
+        "periods": {},
+    }
 
     # Validate up front: an invalid cost/annualization would otherwise be
     # swallowed by run_single_experiment's per-combo error handling and
@@ -1509,6 +1554,12 @@ def run_search(
         "halving_factor": int(halving_factor),
         "halving_stages": int(halving_stages),
         "indicator_cache_size": int(indicator_cache_size),
+        "bootstrap": bool(bootstrap),
+        "bootstrap_resamples": int(bootstrap_resamples),
+        "bootstrap_block_length": int(bootstrap_block_length),
+        "bootstrap_confidence": float(bootstrap_confidence),
+        "bootstrap_seed": int(bootstrap_seed),
+        "bootstrap_min_observations": int(bootstrap_min_observations),
         "halving_resource_bars": halving_resources,
         "top_n": top_n,
         "start": start,
@@ -1921,6 +1972,7 @@ def run_search(
             "n_skipped": n_skipped,
             "n_errors": n_errors,
             "benchmark_metrics": None,
+            "bootstrap_diagnostics": bootstrap_diagnostics,
             "parameter_sensitivity": None,
             "search_diagnostics": halving_diagnostics,
             "indicator_cache": cache_diagnostics,
@@ -1979,6 +2031,27 @@ def run_search(
             risk_free_rate,
             annualization,
         )
+        if bootstrap:
+            # Only the fixed final selection is diagnosed, using its existing
+            # continuous ledger. Separate windows never share resampled bars.
+            # Do not attach these results to top candidates or the journal.
+            for label, period_name in (("validation", "val"), ("test", "test")):
+                window_start, window_end = periods[period_name]
+                bootstrap_diagnostics["periods"][label] = paired_block_bootstrap(
+                    selected_bt["returns"].loc[window_start:window_end],
+                    benchmark_bt["returns"].loc[window_start:window_end],
+                    annualization=annualization,
+                    risk_free_rate=risk_free_rate,
+                    **bootstrap_options,
+                )
+            statuses = [row["status"] for row in bootstrap_diagnostics["periods"].values()]
+            bootstrap_diagnostics["status"] = (
+                "ok"
+                if all(status == "ok" for status in statuses)
+                else "partial"
+                if any(status in {"ok", "partial"} for status in statuses)
+                else "unavailable"
+            )
         print(f"\n  Best: {sname}")
         print(f"  Params: {_params_to_str(params)}")
         print(f"  Val Sharpe:   {best['val_metrics'].get('sharpe', 0):.4f}")
@@ -2070,6 +2143,7 @@ def run_search(
         "run_id": run_id,
         "best": _jsonable(best),
         "benchmark_metrics": _jsonable(benchmark_metrics),
+        "bootstrap_diagnostics": _jsonable(bootstrap_diagnostics),
         "selection_diagnostics": _jsonable(selection_diagnostics),
         "search_diagnostics": _jsonable(halving_diagnostics),
         "indicator_cache": _jsonable(cache_diagnostics),
@@ -2098,6 +2172,7 @@ def run_search(
         "robustness": robustness,
         "parameter_sensitivity": robustness,
         "benchmark_metrics": benchmark_metrics,
+        "bootstrap_diagnostics": bootstrap_diagnostics,
         "selection_diagnostics": selection_diagnostics,
         "search_diagnostics": halving_diagnostics,
         "indicator_cache": cache_diagnostics,

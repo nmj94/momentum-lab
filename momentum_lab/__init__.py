@@ -14,6 +14,7 @@ from .strategies import (
     get_strategy,
     list_strategies,
 )
+from .uncertainty import paired_block_bootstrap
 
 __all__ = [
     "STRATEGY_REGISTRY",
@@ -29,6 +30,7 @@ __all__ = [
     "get_strategy",
     "list_strategies",
     "load_search_config",
+    "paired_block_bootstrap",
     "prepare_data",
     "render_html_report",
     "render_markdown_report",
