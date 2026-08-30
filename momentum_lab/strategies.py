@@ -14,20 +14,55 @@ from typing import ClassVar
 import numpy as np
 import pandas as pd
 
+from .indicators import IndicatorDAG, weighted_moving_average
 
-def _wma(series: pd.Series, period: int) -> pd.Series:
-    """Vectorized weighted moving average (weight 1..period, newest heaviest).
+_wma = weighted_moving_average
 
-    O(period) memory via convolution instead of pandas rolling().apply().
-    """
-    n = len(series)
-    if period <= 1:
-        return series.copy()
-    weights = np.arange(1, period + 1, dtype=float)
-    conv = np.convolve(series.to_numpy(dtype=float), weights[::-1])
-    out = np.full(n, np.nan)
-    out[period - 1 :] = conv[period - 1 : n] / weights.sum()
-    return pd.Series(out, index=series.index)
+
+def _dag(data) -> IndicatorDAG | None:
+    graph = data.get("_indicator_dag")
+    return graph if isinstance(graph, IndicatorDAG) else None
+
+
+def _returns(data, period=1, field="close", shift=0):
+    graph = _dag(data)
+    if graph is not None:
+        return graph.returns(period, field, shift)
+    return data[field].shift(shift).pct_change(period)
+
+
+def _moving_average(data, period, kind="sma", field="close"):
+    graph = _dag(data)
+    if graph is not None:
+        return graph.moving_average(period, kind, field)
+    series = data[field]
+    if kind == "sma":
+        return series.rolling(period).mean()
+    if kind == "ema":
+        return series.ewm(span=period, adjust=False).mean()
+    if kind == "wma":
+        return _wma(series, period)
+    if kind == "dema":
+        first = series.ewm(span=period, adjust=False).mean()
+        return 2 * first - first.ewm(span=period, adjust=False).mean()
+    raise ValueError(f"unknown moving-average kind: {kind}")
+
+
+def _rolling_std(data, period, field="close"):
+    graph = _dag(data)
+    return graph.rolling_std(period, field) if graph is not None else data[field].rolling(period).std()
+
+
+def _rolling_max(data, period, field="high", shift=0):
+    graph = _dag(data)
+    source = data.get(field, data["close"])
+    return graph.rolling_max(period, field, shift) if graph is not None else source.rolling(period).max().shift(shift)
+
+
+def _rolling_min(data, period, field="low", shift=0):
+    graph = _dag(data)
+    source = data.get(field, data["close"])
+    return graph.rolling_min(period, field, shift) if graph is not None else source.rolling(period).min().shift(shift)
 
 
 class BaseStrategy:
@@ -94,10 +129,7 @@ class TSMOM(BaseStrategy):
 
     def generate_positions(self, data, lookback=21, threshold=0.0, long_short=True, skip_recent=0):
         close = data["close"]
-        if skip_recent > 0:
-            ret = close.shift(skip_recent).pct_change(lookback)
-        else:
-            ret = close.pct_change(lookback)
+        ret = _returns(data, lookback, shift=skip_recent)
         pos = pd.Series(0.0, index=close.index)
         pos[ret > threshold] = 1.0
         if long_short:
@@ -119,21 +151,7 @@ class MACross(BaseStrategy):
 
     def generate_positions(self, data, fast=10, slow=50, long_short=True, ma_type="sma"):
         close = data["close"]
-
-        def ma(series, period, mtype):
-            if mtype == "sma":
-                return series.rolling(period).mean()
-            if mtype == "ema":
-                return series.ewm(span=period, adjust=False).mean()
-            if mtype == "wma":
-                return _wma(series, period)
-            if mtype == "dema":
-                e1 = series.ewm(span=period, adjust=False).mean()
-                e2 = e1.ewm(span=period, adjust=False).mean()
-                return 2 * e1 - e2
-            return series.rolling(period).mean()
-
-        diff = ma(close, fast, ma_type) - ma(close, slow, ma_type)
+        diff = _moving_average(data, fast, ma_type) - _moving_average(data, slow, ma_type)
         pos = pd.Series(0.0, index=close.index)
         pos[diff > 0] = 1.0
         if long_short:
@@ -156,8 +174,16 @@ class MACD(BaseStrategy):
 
     def generate_positions(self, data, fast=12, slow=26, signal=9, long_short=True, mode="crossover"):
         close = data["close"]
-        macd_line = close.ewm(span=fast, adjust=False).mean() - close.ewm(span=slow, adjust=False).mean()
-        signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+        graph = _dag(data)
+        macd_line = _moving_average(data, fast, "ema") - _moving_average(data, slow, "ema")
+        signal_line = (
+            graph.node(
+                ("macd_signal", int(fast), int(slow), int(signal)),
+                lambda: macd_line.ewm(span=signal, adjust=False).mean(),
+            )
+            if graph is not None
+            else macd_line.ewm(span=signal, adjust=False).mean()
+        )
         diff = macd_line - signal_line
         pos = pd.Series(0.0, index=close.index)
         if mode == "crossover":
@@ -198,12 +224,23 @@ class RSI(BaseStrategy):
         self, data, period=14, buy_threshold=50, sell_threshold=50, long_short=True, mode="momentum", rsi_smooth=1
     ):
         close = data["close"]
-        delta = close.diff()
-        gain = delta.clip(lower=0).rolling(period).mean()
-        loss = (-delta.clip(upper=0)).rolling(period).mean()
-        rsi = 100 - (100 / (1 + gain / (loss + 1e-10)))
+        graph = _dag(data)
+        if graph is not None:
+            rsi = graph.rsi(period)
+        else:
+            delta = close.diff()
+            gain = delta.clip(lower=0).rolling(period).mean()
+            loss = (-delta.clip(upper=0)).rolling(period).mean()
+            rsi = 100 - (100 / (1 + gain / (loss + 1e-10)))
         if rsi_smooth > 1:
-            rsi = rsi.ewm(span=rsi_smooth, adjust=False).mean()
+            rsi = (
+                graph.node(
+                    ("rsi_smooth", int(period), int(rsi_smooth)),
+                    lambda: rsi.ewm(span=rsi_smooth, adjust=False).mean(),
+                )
+                if graph is not None
+                else rsi.ewm(span=rsi_smooth, adjust=False).mean()
+            )
         pos = pd.Series(0.0, index=close.index)
         if mode == "momentum":
             pos[rsi > buy_threshold] = 1.0
@@ -227,9 +264,17 @@ class ROC(BaseStrategy):
 
     def generate_positions(self, data, period=21, threshold=0.0, long_short=True, smoothing=0):
         close = data["close"]
-        roc = close.pct_change(period)
+        graph = _dag(data)
+        roc = _returns(data, period)
         if smoothing > 0:
-            roc = roc.ewm(span=smoothing, adjust=False).mean()
+            roc = (
+                graph.node(
+                    ("roc_smooth", int(period), int(smoothing)),
+                    lambda: roc.ewm(span=smoothing, adjust=False).mean(),
+                )
+                if graph is not None
+                else roc.ewm(span=smoothing, adjust=False).mean()
+            )
         pos = pd.Series(0.0, index=close.index)
         pos[roc > threshold] = 1.0
         if long_short:
@@ -249,8 +294,8 @@ class Bollinger(BaseStrategy):
 
     def generate_positions(self, data, period=20, num_std=2.0, long_short=True, mode="breakout", band_width_filter=0):
         close = data["close"]
-        ma = close.rolling(period).mean()
-        std = close.rolling(period).std()
+        ma = _moving_average(data, period)
+        std = _rolling_std(data, period)
         upper = ma + num_std * std
         lower = ma - num_std * std
         bw = (upper - lower) / (ma + 1e-10)
@@ -278,10 +323,8 @@ class Donchian(BaseStrategy):
 
     def generate_positions(self, data, period=20, long_short=True, exit_period=0, confirmation=1):
         close = data["close"]
-        high = data.get("high", close)
-        low = data.get("low", close)
-        upper = high.rolling(period).max().shift(1)
-        lower = low.rolling(period).min().shift(1)
+        upper = _rolling_max(data, period, "high", 1)
+        lower = _rolling_min(data, period, "low", 1)
         bu = close > upper
         bd = close < lower
         if confirmation > 1:
@@ -292,8 +335,8 @@ class Donchian(BaseStrategy):
         # emitted a one-bar entry signal, so the backtest immediately went
         # flat on the following bar and made ``exit_period`` ineffective.
         ep = exit_period if exit_period > 0 else period
-        exit_upper = high.rolling(ep).max().shift(1)
-        exit_lower = low.rolling(ep).min().shift(1)
+        exit_upper = _rolling_max(data, ep, "high", 1)
+        exit_lower = _rolling_min(data, ep, "low", 1)
         # Iterate over plain numpy buffers: pandas .iloc indexing in this
         # state machine dominates profile time for the 16k-combo grid.
         c = close.to_numpy(dtype=float)
@@ -327,9 +370,17 @@ class DualMomentum(BaseStrategy):
 
     def generate_positions(self, data, lookback=63, abs_threshold=0.0, long_short=False, smoothing=0):
         close = data["close"]
-        ret = close.pct_change(lookback)
+        graph = _dag(data)
+        ret = _returns(data, lookback)
         if smoothing > 0:
-            ret = ret.ewm(span=smoothing, adjust=False).mean()
+            ret = (
+                graph.node(
+                    ("dual_momentum_smooth", int(lookback), int(smoothing)),
+                    lambda: ret.ewm(span=smoothing, adjust=False).mean(),
+                )
+                if graph is not None
+                else ret.ewm(span=smoothing, adjust=False).mean()
+            )
         pos = pd.Series(0.0, index=close.index)
         pos[ret > abs_threshold] = 1.0
         if long_short:
@@ -352,19 +403,14 @@ class TripleMA(BaseStrategy):
 
     def generate_positions(self, data, fast=10, medium=50, slow=200, long_short=True, ma_type="sma"):
         close = data["close"]
-
-        def cm(s, p):
-            if ma_type == "ema":
-                return s.ewm(span=p, adjust=False).mean()
-            if ma_type == "wma":
-                return _wma(s, p)
-            return s.rolling(p).mean()
-
-        bullish = (cm(close, fast) > cm(close, medium)) & (cm(close, medium) > cm(close, slow))
+        fast_ma = _moving_average(data, fast, ma_type)
+        medium_ma = _moving_average(data, medium, ma_type)
+        slow_ma = _moving_average(data, slow, ma_type)
+        bullish = (fast_ma > medium_ma) & (medium_ma > slow_ma)
         pos = pd.Series(0.0, index=close.index)
         pos[bullish] = 1.0
         if long_short:
-            bearish = (cm(close, fast) < cm(close, medium)) & (cm(close, medium) < cm(close, slow))
+            bearish = (fast_ma < medium_ma) & (medium_ma < slow_ma)
             pos[bearish] = -1.0
         return pos
 
@@ -383,8 +429,17 @@ class VolScale(BaseStrategy):
         # Annualize with the same horizon the backtest/metrics use (365 for
         # crypto); a hardcoded 252 would oversize positions by ~20% there.
         ann = data.get("annualization", 252)
-        ret = close.pct_change(lookback)
-        vol = close.pct_change().rolling(vol_lookback).std() * np.sqrt(ann)
+        graph = _dag(data)
+        ret = _returns(data, lookback)
+        daily_returns = _returns(data)
+        vol = (
+            graph.node(
+                ("return_volatility", int(vol_lookback), float(ann)),
+                lambda: daily_returns.rolling(vol_lookback).std() * np.sqrt(ann),
+            )
+            if graph is not None
+            else daily_returns.rolling(vol_lookback).std() * np.sqrt(ann)
+        )
         raw = pd.Series(0.0, index=close.index)
         raw[ret > threshold] = 1.0
         raw[ret < -threshold] = -1.0
@@ -406,7 +461,7 @@ class Accel(BaseStrategy):
 
     def generate_positions(self, data, short_lb=5, long_lb=21, threshold=0.0, long_short=True):
         close = data["close"]
-        accel = close.pct_change(short_lb) - close.pct_change(long_lb)
+        accel = _returns(data, short_lb) - _returns(data, long_lb)
         pos = pd.Series(0.0, index=close.index)
         pos[accel > threshold] = 1.0
         if long_short:
@@ -429,7 +484,12 @@ class ZScore(BaseStrategy):
 
     def generate_positions(self, data, lookback=21, entry_z=1.0, exit_z=0.0, mode="momentum", long_short=True):
         close = data["close"]
-        z = (close - close.rolling(lookback).mean()) / (close.rolling(lookback).std() + 1e-10)
+        graph = _dag(data)
+        z = (
+            graph.zscore(lookback)
+            if graph is not None
+            else (close - close.rolling(lookback).mean()) / (close.rolling(lookback).std() + 1e-10)
+        )
         is_reversion = mode != "momentum"
         # Plain numpy state machine: the pandas .iloc loop dominated profile
         # time for the 48k-combo grid.
@@ -498,8 +558,12 @@ class Supertrend(BaseStrategy):
         close = data["close"]
         hi = data.get("high", close)
         lo = data.get("low", close)
-        tr = pd.concat([hi - lo, (hi - close.shift(1)).abs(), (lo - close.shift(1)).abs()], axis=1).max(axis=1)
-        atr = tr.rolling(atr_period).mean()
+        graph = _dag(data)
+        if graph is not None:
+            atr = graph.atr(atr_period)
+        else:
+            tr = pd.concat([hi - lo, (hi - close.shift(1)).abs(), (lo - close.shift(1)).abs()], axis=1).max(axis=1)
+            atr = tr.rolling(atr_period).mean()
         mid = (hi + lo) / 2
         upper = np.array(mid + multiplier * atr, dtype=float, copy=True)
         lower = np.array(mid - multiplier * atr, dtype=float, copy=True)
@@ -549,12 +613,10 @@ class MultiBreakout(BaseStrategy):
 
     def generate_positions(self, data, periods=(10, 20, 55), long_short=True, vote_threshold=0.5):
         close = data["close"]
-        hi = data.get("high", close)
-        lo = data.get("low", close)
         sigs = []
         for p in periods:
-            u = hi.rolling(p).max().shift(1)
-            l = lo.rolling(p).min().shift(1)
+            u = _rolling_max(data, p, "high", 1)
+            l = _rolling_min(data, p, "low", 1)
             s = pd.Series(0.0, index=close.index)
             s[close > u] = 1.0
             if long_short:
@@ -1043,8 +1105,8 @@ class Stacked(BaseStrategy):
             )
         else:
             base = pd.Series(0.0, index=close.index)
-        mom = close.pct_change(momentum_lb)
-        ma = close.rolling(ma_filter).mean()
+        mom = _returns(data, momentum_lb)
+        ma = _moving_average(data, ma_filter)
         pos = base.copy()
         if exit_on_neg:
             # Direction-aware trend filter: longs are dropped once the
@@ -1098,16 +1160,37 @@ class RegimeAware(BaseStrategy):
         close = data["close"]
         high = data.get("high", close)
         low = data.get("low", close)
-        adx_raw = self._compute_adx(high, low, close, 14)
-        adx = adx_raw.ewm(span=adx_smooth, adjust=False).mean() if adx_smooth > 0 else adx_raw
+        graph = _dag(data)
+        adx_raw = graph.adx(14) if graph is not None else self._compute_adx(high, low, close, 14)
+        if adx_smooth > 0:
+            adx = (
+                graph.node(
+                    ("adx_smooth", 14, int(adx_smooth)),
+                    lambda: adx_raw.ewm(span=adx_smooth, adjust=False).mean(),
+                )
+                if graph is not None
+                else adx_raw.ewm(span=adx_smooth, adjust=False).mean()
+            )
+        else:
+            adx = adx_raw
         ann = data.get("annualization", 252)
-        dr = close.pct_change()
-        vol_f = dr.rolling(vol_fast).std() * np.sqrt(ann)
-        vol_s = dr.rolling(63).std() * np.sqrt(ann)
+        dr = _returns(data)
+        if graph is not None:
+            vol_f = graph.node(
+                ("return_volatility", int(vol_fast), float(ann)),
+                lambda: dr.rolling(vol_fast).std() * np.sqrt(ann),
+            )
+            vol_s = graph.node(
+                ("return_volatility", 63, float(ann)),
+                lambda: dr.rolling(63).std() * np.sqrt(ann),
+            )
+        else:
+            vol_f = dr.rolling(vol_fast).std() * np.sqrt(ann)
+            vol_s = dr.rolling(63).std() * np.sqrt(ann)
         vol_ratio = vol_f / (vol_s + 1e-10)
-        ma_f = close.rolling(50).mean()
-        ma_s = close.rolling(200).mean()
-        mom = close.pct_change(mom_lookback)
+        ma_f = _moving_average(data, 50)
+        ma_s = _moving_average(data, 200)
+        mom = _returns(data, mom_lookback)
         is_crisis = vol_ratio > crisis_vol_mult
         is_trending = adx > adx_trend_threshold
         if regime_confirm > 1:
@@ -1133,7 +1216,7 @@ class RegimeAware(BaseStrategy):
             pos[mask] = vpn[mask] * 0.5
         pos[is_crisis & ~is_bullish] = vpc[is_crisis & ~is_bullish] * 0.3
         if fast_exit_days > 0 and fast_exit_threshold < 0:
-            fr = close.pct_change(fast_exit_days)
+            fr = _returns(data, fast_exit_days)
             pos[(fr < fast_exit_threshold) & (pos > 0)] *= 0.3
         return pos
 

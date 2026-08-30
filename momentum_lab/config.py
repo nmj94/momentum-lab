@@ -43,6 +43,11 @@ class SearchConfig:
     min_validation_exposure: float = 0.01
     workers: int = 1
     quick: bool = True
+    search_method: str = "grid"
+    candidate_budget: int = 256
+    halving_factor: int = 3
+    halving_stages: int = 3
+    indicator_cache_size: int = 256
     top_n: int = 50
     start: str = "2004-01-01"
     end: str | None = None

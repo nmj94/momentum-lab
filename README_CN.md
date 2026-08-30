@@ -25,6 +25,9 @@ momentum-lab SPY --strategies tsmom,ma_cross,rsi,regime_aware
 
 # 非 ML 完整网格：159,668 次实验，必须显式启用
 momentum-lab GLD --exhaustive --workers 4
+
+# 预算搜索：每策略先取 256 个候选，再按 3 倍比例确定性淘汰
+momentum-lab GLD --successive-halving --workers 4
 ```
 
 机器学习策略目前属于实验功能，不再默认安装或运行：
@@ -45,6 +48,13 @@ momentum-lab SPY --all-strategies --exhaustive --workers 8
 
 未来发布使用的 distribution name 为 `momentum-research-lab`；Python import 和命令行名称仍为 `momentum_lab` 与 `momentum-lab`。
 
+## v0.8 功能升级
+
+- 新增可配置候选预算、淘汰比例和验证资源阶段的确定性 Successive Halving；只有完成全部开发期评估的幸存者才会进入正式排名，但所有阶段评估仍会计入多重检验门槛。
+- 阶段结果以事务方式写入 SQLite，并导出 `search_stages.csv`；中断后可从未完成阶段继续，无需重复计算。
+- 候选进程现在只能获得开发期观测，而不只是看不到测试边界；封存测试数据只在最终选型后释放一次。
+- 新增跨策略共享、按进程有界的指标 DAG 缓存，可复用收益率、均线、波动率、RSI、通道、ATR、ADX 及其依赖节点；报告会展示阶段搜索和缓存效率。
+
 ## v0.7 功能升级
 
 - 回测可限制单根 K 线成交量参与率；容量不足时按 bar 逐步部分成交，不再默认流动性无限。
@@ -55,7 +65,7 @@ momentum-lab SPY --all-strategies --exhaustive --workers 8
 
 ## v0.6 主要修复
 
-- 搜索进程只获得训练和验证边界；全部候选与 Top 文件不再包含测试指标，完成选型后才对复制出的最终候选评估一次测试期。
+- 搜索进程只获得开发期观测及训练/验证边界；全部候选与 Top 文件不再包含测试指标，完成选型后才对复制出的最终候选评估一次测试期。
 - 选型加入最小样本、交易次数和敞口约束，并使用 Deflated Sharpe 概率；同时输出时间折、95% Sharpe 区间、扩展式 walk-forward 选型回放及 CSCV/PBO 估计。
 - 账户破产后净值固定为零，不可能因后续杠杆收益“复活”。
 - 默认采用次日收盘成交，并显式支持同收盘、次日开盘和延迟收盘模型。
@@ -70,7 +80,8 @@ momentum-lab SPY --all-strategies --exhaustive --workers 8
 股票代码 + 版本化运行配置
         -> 复权日频 OHLCV 数据
         -> 40% 训练 / 40% 时间折验证 / 20% 封存测试
-        -> 候选评估阶段无法获得测试边界
+        -> 候选评估阶段无法获得测试期观测
+        -> 可选：只用验证期递增资源进行分阶段淘汰
         -> 约束后的 Deflated Sharpe 选型及 walk-forward/PBO 诊断
         -> 仅对复制出的最终候选报告一次测试期表现
         -> 局部参数敏感性分析
@@ -119,7 +130,11 @@ from momentum_lab import SearchConfig, run_search
 config = SearchConfig(
     ticker="GLD",
     strategies=["tsmom", "ma_cross", "regime_aware"],
-    quick=True,
+    search_method="successive_halving",
+    candidate_budget=256,
+    halving_factor=3,
+    halving_stages=3,
+    indicator_cache_size=256,
     risk_free_rate=0.0,
     cash_rate=0.0,
     financing_rate=0.05,
@@ -196,6 +211,12 @@ momentum-lab TICKER [选项]
 
   --quick                 每个策略取 5 个代表性组合（默认）
   --exhaustive            完整参数网格，必须显式启用
+  --successive-halving    确定性的分阶段预算搜索
+  --candidate-budget N    每策略初始候选数（默认 256）
+  --halving-factor N      每阶段候选缩减比例（默认 3）
+  --halving-stages N      最大验证资源阶段数（默认 3）
+  --indicator-cache-size N
+                          每进程可复用指标节点数；0 表示关闭
   --strategies NAMES      逗号分隔策略名（默认仅非 ML）
   --all-strategies        加入实验性 ML 策略
   --config PATH           加载完整 SearchConfig JSON
@@ -245,6 +266,7 @@ momentum-lab TICKER [选项]
 
 - `run_config.json`：包/schema/Git 信息、源码/数据/lockfile/环境哈希、区间、策略、成本和风险假设。
 - `results.sqlite3`：事务性的正式断点与续跑日志。
+- `search_stages.csv`：Successive Halving 的验证期阶段证据与晋级决定。
 - `all_results.csv`：原子导出的可读结果，仅含训练/验证指标。
 - `top_results.csv`：按验证证据排序的候选，不含测试指标。
 - `robustness.csv`：启用时输出局部参数敏感性摘要。

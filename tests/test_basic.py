@@ -17,7 +17,8 @@ from momentum_lab.data import (
     download_data,
     infer_annualization,
 )
-from momentum_lab.search import _split_periods
+from momentum_lab.indicators import IndicatorDAG
+from momentum_lab.search import _halving_resource_bars, _split_periods
 from momentum_lab.strategies import CLASSIC_STRATEGIES, STRATEGY_REGISTRY, get_strategy
 
 
@@ -620,6 +621,11 @@ def _monkeypatch_market_data(monkeypatch, n=600):
         ({"annualization": 0}, "annualization must be positive"),
         ({"top_n": 0}, "top_n must be at least 1"),
         ({"workers": 0}, "workers must be at least 1"),
+        ({"search_method": "random"}, "search_method must be"),
+        ({"candidate_budget": 0}, "candidate_budget must be"),
+        ({"halving_factor": 1}, "halving_factor must be"),
+        ({"halving_stages": 0}, "halving_stages must be"),
+        ({"indicator_cache_size": -1}, "indicator_cache_size cannot be"),
         ({"robust_frac": 0}, "robust_frac must be in"),
         ({"robust_frac": 1.5}, "robust_frac must be in"),
         ({"execution_model": "future_close"}, "execution_model must be"),
@@ -894,6 +900,146 @@ def test_run_search_parallel_workers_share_execution_contract(tmp_path, monkeypa
     assert result["best"] is not None
 
 
+def test_successive_halving_is_resumable_and_keeps_test_observations_sealed(tmp_path, monkeypatch):
+    """Only full-development survivors enter ranking; all candidate inputs stop before test."""
+    _data, full_frame = _monkeypatch_market_data(monkeypatch)
+    full_periods = _split_periods(full_frame.index)
+    original = search_module.run_single_experiment
+    candidate_ends = []
+
+    def guarded(strategy_name, params, candidate_data, candidate_frame, periods, *args, **kwargs):
+        assert "test" not in periods
+        assert candidate_frame.index[-1] <= full_periods["val"][1]
+        assert candidate_data["close"].index[-1] == candidate_frame.index[-1]
+        assert candidate_frame.index[-1] < full_frame.index[-1]
+        candidate_ends.append(candidate_frame.index[-1])
+        return original(strategy_name, params, candidate_data, candidate_frame, periods, *args, **kwargs)
+
+    monkeypatch.setattr(search_module, "run_single_experiment", guarded)
+    config = {
+        "ticker": "FAKE",
+        "strategies": ["tsmom"],
+        "search_method": "successive_halving",
+        "candidate_budget": 9,
+        "halving_factor": 3,
+        "halving_stages": 3,
+        "min_validation_bars": 20,
+        "min_validation_trades": 0,
+        "min_validation_exposure": 0.0,
+        "robust": False,
+        "generate_report": False,
+        "result_dir": str(tmp_path),
+        "run_id": "halving",
+        "keep_all_results": True,
+    }
+
+    first = search_module.run_search(config=config)
+
+    assert first["n_results"] == 1
+    assert len(first["all_results"]) == 1
+    assert first["search_diagnostics"]["initial_candidates"] == 9
+    assert first["search_diagnostics"]["total_stage_evaluations"] == 13
+    assert first["selection_diagnostics"]["trials"] == 13
+    assert first["selection_diagnostics"]["full_development_trials"] == 1
+    assert first["selection_diagnostics"]["sharpe_std_source"] == "initial_halving_stage"
+    assert len(set(candidate_ends)) == 3
+    stages = pd.read_csv(tmp_path / "halving" / "search_stages.csv")
+    canonical = pd.read_csv(tmp_path / "halving" / "all_results.csv")
+    assert len(stages) == 13
+    assert len(canonical) == 1
+    assert not any(column.startswith("test_") for column in stages.columns)
+    assert not any(column.startswith("test_") for column in canonical.columns)
+
+    monkeypatch.setattr(
+        search_module,
+        "run_single_experiment",
+        lambda *args, **kwargs: pytest.fail("committed stages must not rerun"),
+    )
+    resumed = search_module.run_search(config=config, resume=True)
+
+    assert resumed["n_results"] == 1
+    assert resumed["n_skipped"] == 1
+    assert resumed["search_diagnostics"]["resumed_stage_evaluations"] == 13
+
+
+def test_successive_halving_supports_spawned_workers(tmp_path, monkeypatch):
+    _monkeypatch_market_data(monkeypatch)
+
+    result = search_module.run_search(
+        ticker="FAKE",
+        strategies=["tsmom"],
+        search_method="successive_halving",
+        candidate_budget=3,
+        halving_factor=3,
+        halving_stages=2,
+        min_validation_trades=0,
+        min_validation_exposure=0.0,
+        workers=2,
+        robust=False,
+        generate_report=False,
+        result_dir=tmp_path,
+        run_id="halving-parallel",
+    )
+
+    assert result["n_results"] == 1
+    assert result["n_errors"] == 0
+    assert result["search_diagnostics"]["total_stage_evaluations"] == 4
+
+
+def test_halving_resources_and_tie_breaking_are_deterministic():
+    index = pd.date_range("2024-01-01", periods=100, freq="B")
+    assert _halving_resource_bars(index, stages=3, factor=3, minimum=20) == [20, 34, 100]
+
+    candidates = [{"x": 2}, {"x": 0}, {"x": 1}]
+    results = {
+        search_module._canonical_params(params): {
+            "params": params,
+            "val_metrics": {"sharpe": 1.0, "exposure": 1.0},
+        }
+        for params in candidates
+    }
+    assert search_module._stage_survivors(candidates, results, factor=3) == [{"x": 0}]
+
+
+def test_indicator_dag_is_bounded_and_reuses_nodes_across_strategies():
+    data = _mk_data(300)
+    graph = IndicatorDAG(data, max_entries=2)
+
+    first = graph.returns(21)
+    get_strategy("tsmom").generate_positions(
+        {**data, "_indicator_dag": graph}, lookback=21, threshold=0.0, long_short=True
+    )
+    get_strategy("acceleration").generate_positions(
+        {**data, "_indicator_dag": graph}, short_lb=21, long_lb=42, threshold=0.0, long_short=True
+    )
+
+    assert graph.returns(21) is first
+    assert graph.snapshot()["hits"] >= 2
+    graph.returns(63)
+    assert graph.snapshot()["entries"] == 2
+    assert graph.snapshot()["evictions"] >= 1
+
+
+@pytest.mark.parametrize(
+    ("strategy_name", "params"),
+    [
+        ("ma_cross", {"fast": 5, "slow": 20, "long_short": True, "ma_type": "dema"}),
+        ("rsi", {"period": 14, "buy_threshold": 55, "sell_threshold": 45, "long_short": True}),
+        ("donchian", {"period": 20, "long_short": True, "exit_period": 10}),
+        ("supertrend", {"atr_period": 10, "multiplier": 3.0, "long_short": True}),
+        ("regime_aware", {}),
+    ],
+)
+def test_indicator_dag_preserves_strategy_outputs(strategy_name, params):
+    data = _mk_data(400)
+    strategy = get_strategy(strategy_name)
+    expected = strategy.generate_positions(data, **params)
+    graph = IndicatorDAG(data, max_entries=256)
+    actual = strategy.generate_positions({**data, "_indicator_dag": graph}, **params)
+
+    pd.testing.assert_series_equal(actual, expected)
+
+
 def test_search_checkpoint_uses_a_fixed_schema_across_batches(tmp_path):
     """A sentinel-only first batch must not make later full rows unparsable."""
     path = tmp_path / "all_results.csv"
@@ -980,6 +1126,9 @@ def test_safe_search_defaults_exclude_ml_and_bound_memory():
 
     config = SearchConfig()
     assert config.quick is True
+    assert config.search_method == "grid"
+    assert config.candidate_budget == 256
+    assert config.indicator_cache_size == 256
     assert config.keep_all_results is False
     assert config.risk_free_rate == 0.0
     assert all(not name.startswith("ml_") for name in CLASSIC_STRATEGIES)
@@ -1010,7 +1159,7 @@ def test_search_config_roundtrip_and_unknown_field(tmp_path):
     path = tmp_path / "search.json"
     path.write_text(
         '{"ticker": "SPY", "strategies": "tsmom, rsi", "quick": true, "run_id": "p1", '
-        '"spread_bps": 4.0, "max_participation": 0.05}',
+        '"spread_bps": 4.0, "max_participation": 0.05, "search_method": "successive_halving"}',
         encoding="utf-8",
     )
     config = load_search_config(path)
@@ -1019,6 +1168,7 @@ def test_search_config_roundtrip_and_unknown_field(tmp_path):
     assert config.to_dict()["run_id"] == "p1"
     assert config.spread_bps == 4.0
     assert config.max_participation == 0.05
+    assert config.search_method == "successive_halving"
 
     with pytest.raises(ValueError, match="unknown search config field"):
         SearchConfig.from_mapping({"tickre": "SPY"})
@@ -1333,7 +1483,15 @@ def test_cli_passes_new_options(monkeypatch):
         [
             "momentum-lab",
             "GLD",
-            "--quick",
+            "--successive-halving",
+            "--candidate-budget",
+            "81",
+            "--halving-factor",
+            "3",
+            "--halving-stages",
+            "4",
+            "--indicator-cache-size",
+            "512",
             "--no-robust",
             "--risk-free-rate",
             "0.05",
@@ -1359,6 +1517,11 @@ def test_cli_passes_new_options(monkeypatch):
     cli.main()
 
     assert captured["risk_free_rate"] == 0.05
+    assert captured["search_method"] == "successive_halving"
+    assert captured["candidate_budget"] == 81
+    assert captured["halving_factor"] == 3
+    assert captured["halving_stages"] == 4
+    assert captured["indicator_cache_size"] == 512
     assert captured["spread_bps"] == 4.0
     assert captured["impact_bps"] == 2.0
     assert captured["max_participation"] == 0.05

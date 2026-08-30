@@ -32,6 +32,9 @@ momentum-lab SPY --strategies tsmom,ma_cross,rsi,regime_aware
 
 # Full non-ML grid (159,668 experiments; explicitly opt in)
 momentum-lab GLD --exhaustive --workers 4
+
+# Budgeted search: 256 candidates/strategy, then deterministic 3x halving
+momentum-lab GLD --successive-halving --workers 4
 ```
 
 Machine-learning strategies are experimental and no longer run or install by
@@ -54,6 +57,21 @@ momentum-lab SPY --all-strategies --exhaustive --workers 8
 The future PyPI distribution name is `momentum-research-lab`; the Python import
 and CLI remain `momentum_lab` and `momentum-lab`.
 
+## What changed in v0.8
+
+- Added deterministic Successive Halving with configurable candidate budget,
+  reduction factor, and validation-resource stages. Only candidates evaluated
+  on the complete development window enter the canonical ranking; all staged
+  evaluations still count toward the multiple-testing hurdle.
+- Staged results are transactionally journaled in SQLite and exported to
+  `search_stages.csv`; interrupted stages resume without recomputation.
+- Candidate processes now receive only development observations, not merely
+  train/validation boundary labels. The sealed test snapshot is released once,
+  after final selection.
+- Added a bounded per-process indicator DAG cache shared across strategies for
+  returns, moving averages, volatility, RSI, channels, ATR, ADX, and dependent
+  nodes. Reports expose cache and staged-search efficiency diagnostics.
+
 ## What changed in v0.7
 
 - Backtests can enforce bar-volume participation limits and gradually fill
@@ -71,9 +89,9 @@ and CLI remain `momentum_lab` and `momentum-lab`.
 
 ## What changed in v0.6
 
-- Candidate workers receive only train/validation boundaries. Test metrics are
-  absent from checkpoints and top-candidate files, then evaluated once for a
-  copied final selection.
+- Candidate workers receive only development observations and train/validation
+  boundaries. Test metrics are absent from checkpoints and top-candidate files,
+  then evaluated once for a copied final selection.
 - Selection uses minimum evidence constraints and Deflated Sharpe probability,
   with temporal folds, a 95% Sharpe interval, expanding walk-forward selection
   replay, and a CSCV/PBO estimate.
@@ -96,7 +114,8 @@ and CLI remain `momentum_lab` and `momentum-lab`.
 Ticker + versioned run configuration
         -> adjusted daily OHLCV data
         -> 40% train / 40% temporal validation / 20% sealed test
-        -> candidate evaluation without access to test boundaries
+        -> candidate evaluation without access to test observations
+        -> optional validation-only staged pruning on increasing resources
         -> constrained Deflated-Sharpe selection + walk-forward/PBO diagnostics
         -> exactly one test-window report for a copied selected result
         -> local parameter-sensitivity analysis
@@ -150,7 +169,11 @@ from momentum_lab import SearchConfig, run_search
 config = SearchConfig(
     ticker="GLD",
     strategies=["tsmom", "ma_cross", "regime_aware"],
-    quick=True,
+    search_method="successive_halving",
+    candidate_budget=256,
+    halving_factor=3,
+    halving_stages=3,
+    indicator_cache_size=256,
     risk_free_rate=0.0,
     cash_rate=0.0,
     financing_rate=0.05,
@@ -230,6 +253,12 @@ momentum-lab TICKER [OPTIONS]
 
   --quick                 Five representative configs per strategy (default)
   --exhaustive            Full parameter grid; explicitly opt in
+  --successive-halving    Budgeted deterministic staged search
+  --candidate-budget N    Initial candidates per strategy (default: 256)
+  --halving-factor N      Candidate reduction factor (default: 3)
+  --halving-stages N      Maximum validation-resource stages (default: 3)
+  --indicator-cache-size N
+                          Reusable indicator nodes/process; 0 disables it
   --strategies NAMES      Comma-separated strategies (default: non-ML)
   --all-strategies        Include experimental ML strategies
   --config PATH           Load a complete JSON SearchConfig
@@ -280,6 +309,8 @@ Each run is isolated under `experiments/<run_id>/`:
 - `run_config.json`: package/schema/Git metadata, source/data/lock/environment
   hashes, periods, strategies, execution costs, and risk assumptions.
 - `results.sqlite3`: canonical transactional checkpoint and resume journal.
+- `search_stages.csv`: validation-only stage evidence and advancement decisions
+  for Successive Halving runs.
 - `all_results.csv`: atomic human-readable export; train/validation only.
 - `top_results.csv`: validation-ranked candidates; no test metrics.
 - `robustness.csv`: local parameter-sensitivity summary when enabled.

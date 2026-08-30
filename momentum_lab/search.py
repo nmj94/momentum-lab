@@ -29,6 +29,7 @@ from ._version import __version__
 from .backtest import RISK_FREE_RATE, backtest, evaluate, get_buy_and_hold
 from .config import load_search_config
 from .data import infer_annualization, prepare_data
+from .indicators import IndicatorDAG
 from .reporting import render_html_report, render_markdown_report
 from .robustness import robustness_check
 from .strategies import CLASSIC_STRATEGIES, STRATEGY_REGISTRY, get_strategy
@@ -42,7 +43,7 @@ except ImportError:
 
 
 RESULT_DIR = Path("experiments")
-ENGINE_SCHEMA_VERSION = 4
+ENGINE_SCHEMA_VERSION = 5
 METRIC_KEYS = (
     "sharpe",
     "sortino",
@@ -73,10 +74,24 @@ RESULT_COLUMNS = [
     *(f"{period}_{metric}" for period in ("train", "val") for metric in METRIC_KEYS),
     "val_fold_sharpes",
 ]
+STAGE_EXPORT_COLUMNS = [
+    "strategy",
+    "params",
+    "stage",
+    "resource_bars",
+    "advanced",
+    "score",
+    "error",
+    "val_sharpe",
+    "val_n_observations",
+    "val_trade_count",
+    "val_exposure",
+]
 
 # Shared state for parallel sub-processes (set via Pool initializer).
 _POOL_STATE = None
 _POOL_POSITION_CACHE = None
+_POOL_INDICATOR_CACHE = None
 
 
 def _init_worker(
@@ -88,8 +103,9 @@ def _init_worker(
     validation_folds,
     execution_price_column,
     backtest_kwargs,
+    indicator_cache_size,
 ):
-    global _POOL_POSITION_CACHE, _POOL_STATE
+    global _POOL_INDICATOR_CACHE, _POOL_POSITION_CACHE, _POOL_STATE
     _POOL_STATE = (
         data,
         df,
@@ -101,6 +117,7 @@ def _init_worker(
         backtest_kwargs,
     )
     _POOL_POSITION_CACHE = OrderedDict()
+    _POOL_INDICATOR_CACHE = IndicatorDAG(data, max_entries=indicator_cache_size)
 
 
 def _worker_run(args):
@@ -118,6 +135,7 @@ def _worker_run(args):
         validation_folds=validation_folds,
         execution_price_column=execution_price_column,
         position_cache=_POOL_POSITION_CACHE,
+        indicator_cache=_POOL_INDICATOR_CACHE,
         **backtest_kwargs,
     )
 
@@ -135,6 +153,16 @@ def _jsonable(v):
     if isinstance(v, (list, tuple)):
         return [_jsonable(x) for x in v]
     return v
+
+
+def _canonical_params(params):
+    return json.dumps(
+        _jsonable(params),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=_jsonable,
+    )
 
 
 def _params_to_str(params):
@@ -365,23 +393,166 @@ def _open_result_store(path):
         f"{metric_defs}, val_fold_sharpes TEXT NOT NULL DEFAULT '[]', "
         "PRIMARY KEY (strategy, params))"
     )
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS stage_results ("
+        "strategy TEXT NOT NULL, params TEXT NOT NULL, stage INTEGER NOT NULL, "
+        "resource_bars INTEGER NOT NULL, advanced INTEGER NOT NULL DEFAULT 0, "
+        "score REAL, result_json TEXT NOT NULL, "
+        "PRIMARY KEY (strategy, params, stage))"
+    )
     connection.commit()
     return connection
 
 
-def _store_results(results, path):
-    """Commit one checkpoint batch transactionally to the canonical store."""
+def _insert_results(connection, results):
     rows = _results_rows(results)
     if not rows:
         return
     placeholders = ",".join("?" for _ in RESULT_COLUMNS)
     columns = ",".join(f'"{column}"' for column in RESULT_COLUMNS)
     values = [[row.get(column) for column in RESULT_COLUMNS] for row in rows]
+    connection.executemany(
+        f"INSERT OR REPLACE INTO results ({columns}) VALUES ({placeholders})",
+        values,
+    )
+
+
+def _store_results(results, path):
+    """Commit one checkpoint batch transactionally to the canonical store."""
     with closing(_open_result_store(path)) as connection, connection:
+        _insert_results(connection, results)
+
+
+def _stage_values(stage_results):
+    values = []
+    for strategy, params, stage, resource_bars, result in stage_results:
+        score = _stage_score(result)
+        values.append(
+            (
+                strategy,
+                _canonical_params(params),
+                int(stage),
+                int(resource_bars),
+                score if np.isfinite(score) else None,
+                json.dumps(_jsonable(result), ensure_ascii=False, sort_keys=True, allow_nan=False),
+            )
+        )
+    return values
+
+
+def _insert_stage_results(connection, stage_results):
+    values = _stage_values(stage_results)
+    if values:
         connection.executemany(
-            f"INSERT OR REPLACE INTO results ({columns}) VALUES ({placeholders})",
+            "INSERT OR REPLACE INTO stage_results "
+            "(strategy, params, stage, resource_bars, advanced, score, result_json) "
+            "VALUES (?, ?, ?, ?, 0, ?, ?)",
             values,
         )
+
+
+def _store_stage_results(stage_results, path, *, final=False):
+    """Persist partial-resource evidence, optionally promoting it atomically."""
+    if not stage_results:
+        return
+    with closing(_open_result_store(path)) as connection, connection:
+        _insert_stage_results(connection, stage_results)
+        if final:
+            _insert_results(connection, [item[4] for item in stage_results])
+
+
+def _load_stage_results(path, strategy, stage, resource_bars):
+    if not path.exists():
+        return {}
+    with closing(_open_result_store(path)) as connection:
+        rows = connection.execute(
+            "SELECT params, result_json FROM stage_results WHERE strategy = ? AND stage = ? AND resource_bars = ?",
+            (strategy, int(stage), int(resource_bars)),
+        )
+        loaded = {}
+        for canonical, payload in rows:
+            try:
+                loaded[canonical] = json.loads(payload)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"corrupt staged result for {strategy} stage {stage}: {exc}") from exc
+        return loaded
+
+
+def _mark_stage_survivors(path, strategy, stage, survivor_params):
+    survivor_keys = [_canonical_params(params) for params in survivor_params]
+    with closing(_open_result_store(path)) as connection, connection:
+        connection.execute(
+            "UPDATE stage_results SET advanced = 0 WHERE strategy = ? AND stage = ?",
+            (strategy, int(stage)),
+        )
+        connection.executemany(
+            "UPDATE stage_results SET advanced = 1 WHERE strategy = ? AND params = ? AND stage = ?",
+            [(strategy, canonical, int(stage)) for canonical in survivor_keys],
+        )
+
+
+def _iter_stage_store(path):
+    if not path.exists():
+        return
+    with closing(_open_result_store(path)) as connection:
+        rows = connection.execute(
+            "SELECT strategy, params, stage, resource_bars, advanced, score, result_json "
+            "FROM stage_results ORDER BY stage, strategy, rowid"
+        )
+        for strategy, params, stage, resource_bars, advanced, score, payload in rows:
+            result = json.loads(payload)
+            metrics = result.get("val_metrics", {})
+            yield {
+                "strategy": strategy,
+                "params": params,
+                "stage": stage,
+                "resource_bars": resource_bars,
+                "advanced": advanced,
+                "score": score,
+                "error": result.get("error", ""),
+                "val_sharpe": metrics.get("sharpe"),
+                "val_n_observations": metrics.get("n_observations"),
+                "val_trade_count": metrics.get("trade_count"),
+                "val_exposure": metrics.get("exposure"),
+            }
+
+
+def _export_stage_store(store_path, csv_path):
+    tmp_path = csv_path.with_name(f".{csv_path.name}.{os.getpid()}.tmp")
+    try:
+        with tmp_path.open("w", encoding="utf-8-sig", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=STAGE_EXPORT_COLUMNS)
+            writer.writeheader()
+            writer.writerows(_iter_stage_store(store_path))
+            handle.flush()
+            os.fsync(handle.fileno())
+        tmp_path.replace(csv_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+def _stage_store_count(path):
+    if not path.exists():
+        return 0
+    with closing(_open_result_store(path)) as connection:
+        (count_rows,) = connection.execute("SELECT COUNT(*) FROM stage_results").fetchone()
+    return int(count_rows or 0)
+
+
+def _stage_score_dispersion(path, stage=0):
+    """Estimate candidate Sharpe dispersion from one equal-resource stage."""
+    if not path.exists():
+        return None
+    with closing(_open_result_store(path)) as connection:
+        scores = [
+            float(row[0])
+            for row in connection.execute(
+                "SELECT score FROM stage_results WHERE stage = ? AND score IS NOT NULL",
+                (int(stage),),
+            )
+            if np.isfinite(row[0])
+        ]
+    return float(np.std(scores, ddof=1)) if len(scores) > 1 else None
 
 
 def _iter_result_store(path, batch_size=10_000):
@@ -449,6 +620,11 @@ _RESUME_COMPAT_FIELDS = (
     "ticker",
     "strategies",
     "quick",
+    "search_method",
+    "candidate_budget",
+    "halving_factor",
+    "halving_stages",
+    "indicator_cache_size",
     "data_snapshot",
     "package_version",
     "engine_schema_version",
@@ -582,6 +758,61 @@ def _quick_sample(strategy, k=5):
     return picked
 
 
+def _slice_temporal_mapping(values, end):
+    """Slice every pandas object in a mapping without exposing later bars."""
+    sliced = {}
+    for key, value in values.items():
+        if isinstance(value, (pd.Series, pd.DataFrame)):
+            sliced[key] = value.loc[:end]
+        else:
+            sliced[key] = value
+    return sliced
+
+
+def _halving_resource_bars(validation_index, stages=3, factor=3, minimum=2):
+    """Return strictly increasing validation prefixes ending at full resource."""
+    total = len(validation_index)
+    if total == 0:
+        return []
+    resources = []
+    for remaining in range(stages - 1, -1, -1):
+        proposed = math.ceil(total / (factor**remaining))
+        resource = min(total, max(int(minimum), proposed))
+        if not resources or resource > resources[-1]:
+            resources.append(resource)
+    if resources[-1] != total:
+        resources.append(total)
+    return resources
+
+
+def _stage_score(result):
+    """Validation-only score used to prune a staged search."""
+    if result.get("error"):
+        return -math.inf
+    metrics = result.get("val_metrics", {})
+    try:
+        score = float(metrics.get("sharpe", -99.0))
+        exposure = float(metrics.get("exposure", 0.0))
+    except (TypeError, ValueError):
+        return -math.inf
+    if not np.isfinite(score) or exposure <= 1e-12:
+        return -math.inf
+    return score
+
+
+def _stage_survivors(candidates, results_by_params, factor):
+    """Deterministically retain the best ceil(n / factor) candidates."""
+    ranked = sorted(
+        candidates,
+        key=lambda params: (
+            -_stage_score(results_by_params[_canonical_params(params)]),
+            _canonical_params(params),
+        ),
+    )
+    keep = max(1, math.ceil(len(ranked) / factor)) if ranked else 0
+    return ranked[:keep]
+
+
 def _period_metrics(bt, effective_positions, start, end, risk_free_rate, annualization):
     period_returns = bt["returns"].loc[start:end]
     period_trades = bt["trades"].loc[start:end]
@@ -631,7 +862,14 @@ def _validation_fold_sharpes(bt, effective_positions, bounds, folds, risk_free_r
     ]
 
 
-def _strategy_positions(strategy_name, params, data, position_cache=None, cache_size=32):
+def _strategy_positions(
+    strategy_name,
+    params,
+    data,
+    position_cache=None,
+    cache_size=32,
+    indicator_cache=None,
+):
     """Reuse the expensive base signal across universal smoothing variants."""
     strategy = get_strategy(strategy_name)
     if not hasattr(strategy, "generate_positions"):
@@ -643,7 +881,11 @@ def _strategy_positions(strategy_name, params, data, position_cache=None, cache_
     key = f"{strategy_name}\0{canonical}"
     raw = position_cache.get(key) if position_cache is not None else None
     if raw is None:
-        raw = strategy.generate_positions(data, **base_params)
+        strategy_data = data
+        if indicator_cache is not None:
+            strategy_data = dict(data)
+            strategy_data["_indicator_dag"] = indicator_cache
+        raw = strategy.generate_positions(strategy_data, **base_params)
         if position_cache is not None:
             position_cache[key] = raw
             position_cache.move_to_end(key)
@@ -666,12 +908,20 @@ def run_single_experiment(
     validation_folds=4,
     execution_price_column="close",
     position_cache=None,
+    indicator_cache=None,
     **backtest_kwargs,
 ):
+    cache_before = indicator_cache.snapshot() if indicator_cache is not None else None
     try:
-        positions = _strategy_positions(strategy_name, params, data, position_cache=position_cache)
+        positions = _strategy_positions(
+            strategy_name,
+            params,
+            data,
+            position_cache=position_cache,
+            indicator_cache=indicator_cache,
+        )
     except Exception as e:
-        return {
+        result = {
             "strategy": strategy_name,
             "params": params,
             "error": str(e),
@@ -679,8 +929,11 @@ def run_single_experiment(
             "val_metrics": {},
             "val_fold_sharpes": [],
         }
+        if cache_before is not None:
+            result["indicator_cache"] = indicator_cache.delta(cache_before)
+        return result
     if execution_price_column not in df.columns:
-        return {
+        result = {
             "strategy": strategy_name,
             "params": params,
             "error": f"execution price column '{execution_price_column}' is unavailable",
@@ -688,6 +941,9 @@ def run_single_experiment(
             "val_metrics": {"sharpe": -99.0},
             "val_fold_sharpes": [],
         }
+        if cache_before is not None:
+            result["indicator_cache"] = indicator_cache.delta(cache_before)
+        return result
     prices = df[execution_price_column]
     results = {
         "strategy": strategy_name,
@@ -704,12 +960,15 @@ def run_single_experiment(
         # by the position held at the previous bar close.
         effective_positions = bt["positions"].shift(1).fillna(0.0)
     except Exception as exc:
-        return {
+        result = {
             **results,
             "error": str(exc),
             "train_metrics": {"sharpe": -99.0},
             "val_metrics": {"sharpe": -99.0},
         }
+        if cache_before is not None:
+            result["indicator_cache"] = indicator_cache.delta(cache_before)
+        return result
     annualization = backtest_kwargs.get("annualization", 252)
     for pname in ("train", "val"):
         start, end = periods[pname]
@@ -735,6 +994,8 @@ def run_single_experiment(
     )
     if period_errors:
         results["error"] = "; ".join(period_errors)
+    if cache_before is not None:
+        results["indicator_cache"] = indicator_cache.delta(cache_before)
     return results
 
 
@@ -853,14 +1114,19 @@ def _select_from_store(
     min_trades,
     min_exposure,
     validation_folds,
+    trial_count_override=None,
+    sharpe_std_override=None,
 ):
     valid_sharpes = []
     for result in _iter_result_store(store_path):
         sharpe = result.get("val_metrics", {}).get("sharpe", -99)
         if not result.get("error") and np.isfinite(sharpe) and sharpe > -99:
             valid_sharpes.append(float(sharpe))
-    sharpe_std = float(np.std(valid_sharpes, ddof=1)) if len(valid_sharpes) > 1 else 0.0
-    hurdle = _multiple_testing_hurdle(sharpe_std, len(valid_sharpes))
+    full_development_std = float(np.std(valid_sharpes, ddof=1)) if len(valid_sharpes) > 1 else 0.0
+    use_override = sharpe_std_override is not None and np.isfinite(sharpe_std_override) and sharpe_std_override >= 0
+    sharpe_std = float(sharpe_std_override) if use_override else full_development_std
+    trial_count = max(len(valid_sharpes), int(trial_count_override or 0))
+    hurdle = _multiple_testing_hurdle(sharpe_std, trial_count)
 
     heap = []
     sequence = count()
@@ -893,9 +1159,11 @@ def _select_from_store(
     top = [entry[3] for entry in sorted(heap, key=lambda item: (-item[0], -item[1]))]
     diagnostics = {
         "selection_metric": "deflated_sharpe_probability",
-        "trials": len(valid_sharpes),
+        "trials": trial_count,
+        "full_development_trials": len(valid_sharpes),
         "eligible_candidates": eligible_count,
         "observed_sharpe_std": sharpe_std,
+        "sharpe_std_source": "initial_halving_stage" if use_override else "full_development",
         "multiple_testing_sharpe_hurdle": hurdle,
         "pbo": _estimate_pbo(fold_rows),
         "walk_forward_selection": _walk_forward_selection_diagnostic(fold_rows),
@@ -931,6 +1199,11 @@ def run_search(
     min_validation_exposure=0.01,
     workers=1,
     quick=True,
+    search_method="grid",
+    candidate_budget=256,
+    halving_factor=3,
+    halving_stages=3,
+    indicator_cache_size=256,
     top_n=50,
     start="2004-01-01",
     end=None,
@@ -978,6 +1251,14 @@ def run_search(
         min_validation_exposure: Minimum mean absolute validation exposure.
         workers: Number of parallel workers (1 = sequential).
         quick: If True (default), only test 5 params per strategy.
+        search_method: ``grid`` for quick/exhaustive behavior or
+            ``successive_halving`` for a deterministic budgeted search.
+        candidate_budget: Initial candidates sampled per strategy by
+            successive halving.
+        halving_factor: Candidate reduction factor after each partial stage.
+        halving_stages: Maximum number of validation-resource stages.
+        indicator_cache_size: Maximum shared indicator nodes per process;
+            zero disables the indicator DAG cache.
         top_n: Number of top results to keep.
         start: Data start date.
         end: Data end date. None = today.
@@ -1031,6 +1312,11 @@ def run_search(
         min_validation_exposure = configured["min_validation_exposure"]
         workers = configured["workers"]
         quick = configured["quick"]
+        search_method = configured["search_method"]
+        candidate_budget = configured["candidate_budget"]
+        halving_factor = configured["halving_factor"]
+        halving_stages = configured["halving_stages"]
+        indicator_cache_size = configured["indicator_cache_size"]
         top_n = configured["top_n"]
         start = configured["start"]
         end = configured["end"]
@@ -1117,6 +1403,19 @@ def run_search(
         raise ValueError("top_n must be at least 1")
     if workers < 1:
         raise ValueError("workers must be at least 1")
+    if search_method not in {"grid", "successive_halving"}:
+        raise ValueError("search_method must be grid or successive_halving")
+    integer_search_inputs = (candidate_budget, halving_factor, halving_stages, indicator_cache_size)
+    if any(isinstance(value, bool) or not isinstance(value, (int, np.integer)) for value in integer_search_inputs):
+        raise TypeError("search budget, halving, and indicator-cache values must be integers")
+    if candidate_budget < 1:
+        raise ValueError("candidate_budget must be at least 1")
+    if halving_factor < 2:
+        raise ValueError("halving_factor must be at least 2")
+    if halving_stages < 1:
+        raise ValueError("halving_stages must be at least 1")
+    if indicator_cache_size < 0:
+        raise ValueError("indicator_cache_size cannot be negative")
     if not 0 < robust_frac <= 1:
         raise ValueError("robust_frac must be in (0, 1]")
     if not isinstance(generate_report, (bool, np.bool_)):
@@ -1163,9 +1462,20 @@ def run_search(
         backtest_kwargs["volume"] = df["volume"]
     n = len(df)
     periods = _split_periods(df.index)
-    # Workers receive no test boundary at all.  The coordinator releases it
-    # only after one candidate has been selected from development metrics.
+    # Candidate workers receive neither test boundaries nor test observations.
+    # The coordinator releases the full snapshot only after validation selects
+    # one copied candidate.
     selection_periods = {name: periods[name] for name in ("train", "val")}
+    development_end = periods["val"][1]
+    development_data = _slice_temporal_mapping(data, development_end)
+    development_df = df.loc[:development_end]
+    development_backtest_kwargs = _slice_temporal_mapping(backtest_kwargs, development_end)
+    validation_index = development_df.loc[periods["val"][0] : periods["val"][1]].index
+    halving_resources = (
+        _halving_resource_bars(validation_index, halving_stages, halving_factor, min_validation_bars)
+        if search_method == "successive_halving"
+        else []
+    )
     if strategies is None:
         # Safe default: a small quick run over non-ML strategies. ML remains
         # available when requested explicitly but no longer turns a one-line
@@ -1194,6 +1504,12 @@ def run_search(
         "min_validation_exposure": float(min_validation_exposure),
         "workers": workers,
         "quick": quick,
+        "search_method": search_method,
+        "candidate_budget": int(candidate_budget),
+        "halving_factor": int(halving_factor),
+        "halving_stages": int(halving_stages),
+        "indicator_cache_size": int(indicator_cache_size),
+        "halving_resource_bars": halving_resources,
         "top_n": top_n,
         "start": start,
         "end": end,
@@ -1230,8 +1546,16 @@ def run_search(
         if s not in STRATEGY_REGISTRY:
             print(f"  WARNING: Unknown strategy '{s}' skipped. Use --list to see available names.")
     counts = {s: get_strategy(s).count_param_combinations() for s in known}
-    total = sum(min(5, c) if quick else c for c in counts.values())
-    print(f"  Strategies: {len(known)} (of {len(strategies)} requested), Total experiments: {total}")
+    if search_method == "successive_halving":
+        total = sum(min(candidate_budget, count_params) for count_params in counts.values())
+        resources_text = " -> ".join(str(value) for value in halving_resources)
+        print(
+            f"  Strategies: {len(known)} (of {len(strategies)} requested), "
+            f"Initial candidates: {total}, Validation bars: {resources_text}"
+        )
+    else:
+        total = sum(min(5, count_params) if quick else count_params for count_params in counts.values())
+        print(f"  Strategies: {len(known)} (of {len(strategies)} requested), Total experiments: {total}")
 
     all_results = []
     n_results = 0
@@ -1239,8 +1563,9 @@ def run_search(
     n_errors = 0
     t0 = time.time()
     all_csv = run_dir / "all_results.csv"
+    stage_csv = run_dir / "search_stages.csv"
     store_path = run_dir / "results.sqlite3"
-    if not resume and (all_csv.exists() or store_path.exists()):
+    if not resume and (all_csv.exists() or stage_csv.exists() or store_path.exists()):
         # Preserve previous artifacts, but start from an empty transactional
         # journal when a run-id is intentionally reused without --resume.
         stamp = f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{uuid4().hex[:6]}"
@@ -1248,6 +1573,10 @@ def run_search(
         if all_csv.exists():
             backup = run_dir / f"all_results.{stamp}.bak.csv"
             all_csv.rename(backup)
+            moved.append(backup.name)
+        if stage_csv.exists():
+            backup = run_dir / f"search_stages.{stamp}.bak.csv"
+            stage_csv.rename(backup)
             moved.append(backup.name)
         if store_path.exists():
             with closing(_open_result_store(store_path)) as connection:
@@ -1269,7 +1598,7 @@ def run_search(
             _migrate_csv_checkpoint(all_csv, store_path)
         n_skipped, n_errors = _store_counts(store_path)
         n_results = n_skipped
-        if keep_all_results:
+        if keep_all_results and search_method == "grid":
             all_results.extend(_iter_result_store(store_path))
         if n_skipped:
             print(f"  Resume: found {n_skipped} committed experiments in {store_path}")
@@ -1280,121 +1609,304 @@ def run_search(
             pass
 
     use_workers = workers > 1 and len(known) > 0
-    pool = None
-    if use_workers:
+    cache_totals = {"hits": 0, "misses": 0, "evictions": 0, "observed_evaluations": 0}
+    n_stage_evaluations = 0
+    n_stage_skipped = 0
+    halving_stage_rows = []
+    halving_diagnostics = None
+
+    def _observe_cache(result):
+        stats = result.get("indicator_cache") or {}
+        if stats:
+            cache_totals["observed_evaluations"] += 1
+            for key in ("hits", "misses", "evictions"):
+                cache_totals[key] += int(stats.get(key, 0))
+
+    def _make_pool(worker_data, worker_df, worker_periods, worker_backtest_kwargs):
+        if not use_workers:
+            return None
         import multiprocessing as mp
 
-        ctx = mp.get_context("spawn")
-        pool = ctx.Pool(
+        return mp.get_context("spawn").Pool(
             workers,
             initializer=_init_worker,
             initargs=(
-                data,
-                df,
-                selection_periods,
+                worker_data,
+                worker_df,
+                worker_periods,
                 cost_bps,
                 risk_free_rate,
                 validation_folds,
                 execution_price_column,
-                backtest_kwargs,
+                worker_backtest_kwargs,
+                indicator_cache_size,
             ),
         )
 
-    batch = []
-    position_cache = OrderedDict()
+    if search_method == "grid":
+        pool = _make_pool(development_data, development_df, selection_periods, development_backtest_kwargs)
+        batch = []
+        position_cache = OrderedDict()
+        indicator_cache = IndicatorDAG(development_data, max_entries=indicator_cache_size)
 
-    def _flush_batch():
-        if batch:
-            _store_results(batch, store_path)
-            batch.clear()
+        def _flush_batch():
+            if batch:
+                _store_results(batch, store_path)
+                batch.clear()
 
-    def _handle(result):
-        nonlocal n_errors, n_results
-        n_results += 1
-        if result.get("error"):
-            n_errors += 1
-        if keep_all_results:
-            all_results.append(result)
-        batch.append(result)
-        if len(batch) >= 10_000:
-            _flush_batch()
+        def _handle(result):
+            nonlocal n_errors, n_results
+            n_results += 1
+            if result.get("error"):
+                n_errors += 1
+            _observe_cache(result)
+            if keep_all_results:
+                all_results.append(result)
+            batch.append(result)
+            if len(batch) >= 10_000:
+                _flush_batch()
 
-    search_ok = False
-    try:
-        for sname in strategies:
-            if sname not in STRATEGY_REGISTRY:
-                continue
-            s = get_strategy(sname)
-            if quick:
-                combos = _quick_sample(s, 5)
-                n_combos = len(combos)
-            else:
-                # Iterate lazily: large grids contain hundreds of thousands
-                # of combinations and must not be materialized as a list.
-                combos = s.iter_param_combinations()
-                n_combos = s.count_param_combinations()
-            if resume:
-                completed_for_strategy = _completed_params(store_path, sname)
-                n_combos = max(0, n_combos - len(completed_for_strategy))
-                combos = (
-                    params
-                    for params in combos
-                    if json.dumps(
-                        _jsonable(params),
-                        sort_keys=True,
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                        default=_jsonable,
-                    )
-                    not in completed_for_strategy
+        search_ok = False
+        try:
+            for sname in strategies:
+                if sname not in STRATEGY_REGISTRY:
+                    continue
+                strategy = get_strategy(sname)
+                if quick:
+                    combos = _quick_sample(strategy, 5)
+                    n_combos = len(combos)
+                else:
+                    # Iterate lazily: large grids contain hundreds of thousands
+                    # of combinations and must not be materialized as a list.
+                    combos = strategy.iter_param_combinations()
+                    n_combos = strategy.count_param_combinations()
+                if resume:
+                    completed_for_strategy = _completed_params(store_path, sname)
+                    n_combos = max(0, n_combos - len(completed_for_strategy))
+                    combos = (params for params in combos if _canonical_params(params) not in completed_for_strategy)
+                cat = (
+                    "ML"
+                    if sname.startswith("ml_")
+                    else ("combo" if sname in ["ensemble", "stacked", "regime_aware"] else "classic")
                 )
-            cat = (
-                "ML"
-                if sname.startswith("ml_")
-                else ("combo" if sname in ["ensemble", "stacked", "regime_aware"] else "classic")
-            )
-            print(f"\n  [{cat}] {sname} ({n_combos} params) ...")
+                print(f"\n  [{cat}] {sname} ({n_combos} params) ...")
 
-            if pool is not None:
-                job = pool.imap_unordered(_worker_run, ((sname, p) for p in combos), chunksize=16)
-                for result in tqdm(job, desc=f"  {sname}", total=n_combos, leave=True):
-                    _handle(result)
-            else:
-                for params in tqdm(combos, desc=f"  {sname}", total=n_combos, leave=True):
-                    result = run_single_experiment(
-                        sname,
-                        params,
-                        data,
-                        df,
-                        selection_periods,
-                        cost_bps,
-                        risk_free_rate,
-                        validation_folds=validation_folds,
-                        execution_price_column=execution_price_column,
-                        position_cache=position_cache,
-                        **backtest_kwargs,
-                    )
-                    _handle(result)
+                if pool is not None:
+                    job = pool.imap_unordered(_worker_run, ((sname, params) for params in combos), chunksize=16)
+                    for result in tqdm(job, desc=f"  {sname}", total=n_combos, leave=True):
+                        _handle(result)
+                else:
+                    for params in tqdm(combos, desc=f"  {sname}", total=n_combos, leave=True):
+                        result = run_single_experiment(
+                            sname,
+                            params,
+                            development_data,
+                            development_df,
+                            selection_periods,
+                            cost_bps,
+                            risk_free_rate,
+                            validation_folds=validation_folds,
+                            execution_price_column=execution_price_column,
+                            position_cache=position_cache,
+                            indicator_cache=indicator_cache,
+                            **development_backtest_kwargs,
+                        )
+                        _handle(result)
 
+                _flush_batch()
+                print(f"  [checkpoint] {sname} done, {n_results} total")
+            search_ok = True
+        finally:
+            # Persist whatever was completed before an interruption so --resume
+            # can pick up even when a strategy does not reach its checkpoint.
             _flush_batch()
-            print(f"  [checkpoint] {sname} done, {n_results} total")
-        search_ok = True
-    finally:
-        # Persist whatever was completed before an interruption so --resume
-        # can pick up even when a strategy does not reach its normal checkpoint.
-        _flush_batch()
-        if pool is not None:
-            # On failure, terminate: close()+join() would wait for millions of
-            # queued tasks before propagating the error.
-            if search_ok:
-                pool.close()
-            else:
-                pool.terminate()
-            pool.join()
-        if store_path.exists():
-            _export_result_store(store_path, all_csv)
+            if pool is not None:
+                if search_ok:
+                    pool.close()
+                else:
+                    pool.terminate()
+                pool.join()
+            if store_path.exists():
+                _export_result_store(store_path, all_csv)
+    else:
+        survivors = {sname: _quick_sample(get_strategy(sname), min(candidate_budget, counts[sname])) for sname in known}
+        initial_candidates = sum(len(values) for values in survivors.values())
+        staged_search_ok = False
+        try:
+            for stage, resource_bars in enumerate(halving_resources):
+                cutoff = validation_index[resource_bars - 1]
+                stage_data = _slice_temporal_mapping(development_data, cutoff)
+                stage_df = development_df.loc[:cutoff]
+                stage_periods = {
+                    "train": selection_periods["train"],
+                    "val": (selection_periods["val"][0], cutoff),
+                }
+                stage_backtest_kwargs = _slice_temporal_mapping(development_backtest_kwargs, cutoff)
+                stage_pool = _make_pool(stage_data, stage_df, stage_periods, stage_backtest_kwargs)
+                stage_position_cache = OrderedDict()
+                stage_indicator_cache = IndicatorDAG(stage_data, max_entries=indicator_cache_size)
+                final_stage = stage == len(halving_resources) - 1
+                stage_batch = []
+                stage_ok = False
+                stage_summary = {
+                    "stage": stage + 1,
+                    "resource_bars": resource_bars,
+                    "validation_end": str(cutoff),
+                    "input_candidates": 0,
+                    "advanced_candidates": 0,
+                    "new_evaluations": 0,
+                    "resumed_evaluations": 0,
+                    "errors": 0,
+                    "strategies": [],
+                }
+
+                def _flush_stage_batch(items=stage_batch, promote=final_stage):
+                    if items:
+                        _store_stage_results(items, store_path, final=promote)
+                        items.clear()
+
+                try:
+                    print(
+                        f"\n  [halving {stage + 1}/{len(halving_resources)}] "
+                        f"{resource_bars} validation bars through {cutoff.date()}"
+                    )
+                    for sname in known:
+                        candidates = survivors[sname]
+                        stage_summary["input_candidates"] += len(candidates)
+                        restored = _load_stage_results(store_path, sname, stage, resource_bars) if resume else {}
+                        results_by_params = {
+                            _canonical_params(params): restored[_canonical_params(params)]
+                            for params in candidates
+                            if _canonical_params(params) in restored
+                        }
+                        missing = [params for params in candidates if _canonical_params(params) not in restored]
+                        resumed_count = len(candidates) - len(missing)
+                        n_stage_skipped += resumed_count
+                        stage_summary["resumed_evaluations"] += resumed_count
+                        stage_summary["errors"] += sum(
+                            bool(result.get("error")) for result in results_by_params.values()
+                        )
+                        print(f"    {sname}: {len(candidates)} candidates ({len(missing)} to run)")
+
+                        if stage_pool is not None:
+                            job = stage_pool.imap_unordered(
+                                _worker_run,
+                                ((sname, params) for params in missing),
+                                chunksize=16,
+                            )
+                            iterator = tqdm(job, desc=f"    {sname}", total=len(missing), leave=True)
+                            for result in iterator:
+                                canonical = _canonical_params(result["params"])
+                                results_by_params[canonical] = result
+                                stage_batch.append((sname, result["params"], stage, resource_bars, result))
+                                n_stage_evaluations += 1
+                                stage_summary["new_evaluations"] += 1
+                                stage_summary["errors"] += int(bool(result.get("error")))
+                                _observe_cache(result)
+                                if len(stage_batch) >= 512:
+                                    _flush_stage_batch()
+                        else:
+                            for params in tqdm(missing, desc=f"    {sname}", total=len(missing), leave=True):
+                                result = run_single_experiment(
+                                    sname,
+                                    params,
+                                    stage_data,
+                                    stage_df,
+                                    stage_periods,
+                                    cost_bps,
+                                    risk_free_rate,
+                                    validation_folds=validation_folds,
+                                    execution_price_column=execution_price_column,
+                                    position_cache=stage_position_cache,
+                                    indicator_cache=stage_indicator_cache,
+                                    **stage_backtest_kwargs,
+                                )
+                                canonical = _canonical_params(params)
+                                results_by_params[canonical] = result
+                                stage_batch.append((sname, params, stage, resource_bars, result))
+                                n_stage_evaluations += 1
+                                stage_summary["new_evaluations"] += 1
+                                stage_summary["errors"] += int(bool(result.get("error")))
+                                _observe_cache(result)
+                                if len(stage_batch) >= 512:
+                                    _flush_stage_batch()
+
+                        _flush_stage_batch()
+                        if final_stage:
+                            # Also repairs a manually damaged canonical table
+                            # from the complete, validation-only stage journal.
+                            promoted = [results_by_params[_canonical_params(params)] for params in candidates]
+                            _store_results(promoted, store_path)
+                            next_candidates = candidates
+                        else:
+                            next_candidates = _stage_survivors(candidates, results_by_params, halving_factor)
+                        _mark_stage_survivors(store_path, sname, stage, next_candidates)
+                        survivors[sname] = next_candidates
+                        stage_summary["advanced_candidates"] += len(next_candidates)
+                        best_stage_score = (
+                            _stage_score(results_by_params[_canonical_params(next_candidates[0])])
+                            if next_candidates
+                            else None
+                        )
+                        stage_summary["strategies"].append(
+                            {
+                                "strategy": sname,
+                                "input_candidates": len(candidates),
+                                "advanced_candidates": len(next_candidates),
+                                "best_stage_sharpe": (
+                                    best_stage_score
+                                    if best_stage_score is not None and np.isfinite(best_stage_score)
+                                    else None
+                                ),
+                            }
+                        )
+                    stage_ok = True
+                finally:
+                    _flush_stage_batch()
+                    if stage_pool is not None:
+                        if stage_ok:
+                            stage_pool.close()
+                        else:
+                            stage_pool.terminate()
+                        stage_pool.join()
+                    _export_stage_store(store_path, stage_csv)
+                    _export_result_store(store_path, all_csv)
+                halving_stage_rows.append(stage_summary)
+            staged_search_ok = True
+        finally:
+            if store_path.exists():
+                _export_stage_store(store_path, stage_csv)
+                _export_result_store(store_path, all_csv)
+
+        if staged_search_ok:
+            n_results, n_errors = _store_counts(store_path)
+            if keep_all_results:
+                all_results = list(_iter_result_store(store_path))
+        halving_diagnostics = {
+            "method": "successive_halving",
+            "initial_candidates": initial_candidates,
+            "resource_bars": halving_resources,
+            "stages": halving_stage_rows,
+            "new_stage_evaluations": n_stage_evaluations,
+            "resumed_stage_evaluations": n_stage_skipped,
+            "total_stage_evaluations": n_stage_evaluations + n_stage_skipped,
+            "final_candidates": n_results,
+            "eliminated_candidates": max(0, initial_candidates - n_results),
+        }
 
     elapsed = time.time() - t0
+    if halving_diagnostics is None:
+        halving_diagnostics = {
+            "method": "grid",
+            "candidate_evaluations": n_results,
+            "resumed_candidates": n_skipped,
+        }
+    cache_requests = cache_totals["hits"] + cache_totals["misses"]
+    cache_diagnostics = {
+        "max_entries_per_process": int(indicator_cache_size),
+        **cache_totals,
+        "hit_rate": cache_totals["hits"] / cache_requests if cache_requests else 0.0,
+    }
     print(f"\n  Search complete! {n_results} results ({n_errors} errors) in {elapsed / 60:.1f} min")
 
     if n_results == 0:
@@ -1411,6 +1923,8 @@ def run_search(
             "n_errors": n_errors,
             "benchmark_metrics": None,
             "parameter_sensitivity": None,
+            "search_diagnostics": halving_diagnostics,
+            "indicator_cache": cache_diagnostics,
         }
 
     # Phase 2: apply minimum-evidence constraints and rank by Deflated
@@ -1424,6 +1938,10 @@ def run_search(
         min_validation_trades,
         min_validation_exposure,
         validation_folds,
+        trial_count_override=(
+            halving_diagnostics.get("total_stage_evaluations") if search_method == "successive_halving" else None
+        ),
+        sharpe_std_override=(_stage_score_dispersion(store_path) if search_method == "successive_halving" else None),
     )
     if not keep_all_results:
         all_results = []
@@ -1554,6 +2072,8 @@ def run_search(
         "best": _jsonable(best),
         "benchmark_metrics": _jsonable(benchmark_metrics),
         "selection_diagnostics": _jsonable(selection_diagnostics),
+        "search_diagnostics": _jsonable(halving_diagnostics),
+        "indicator_cache": _jsonable(cache_diagnostics),
         "parameter_sensitivity": _jsonable(robustness),
         "n_results": n_results,
         "n_skipped": n_skipped,
@@ -1580,6 +2100,8 @@ def run_search(
         "parameter_sensitivity": robustness,
         "benchmark_metrics": benchmark_metrics,
         "selection_diagnostics": selection_diagnostics,
+        "search_diagnostics": halving_diagnostics,
+        "indicator_cache": cache_diagnostics,
         "run_id": run_id,
         "result_dir": str(run_dir),
         "n_results": n_results,

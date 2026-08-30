@@ -35,7 +35,7 @@ evidence, explicit assumptions, and repeatability.
 - Strict OHLC data contracts, reusable late-listing cache metadata, and weekly
   provider-contract CI.
 
-## v0.7 — Market realism and scale (in progress)
+## v0.7 — Market realism
 
 Delivered in v0.7.0:
 
@@ -45,10 +45,21 @@ Delivered in v0.7.0:
   and minimum-fee models, wired through search configuration and CLI defaults.
 - Automated self-contained HTML and Markdown research reports.
 
-Remaining v0.7 work:
+## v0.8 — Scale-aware search
 
-- Feature and indicator DAG caching beyond the v0.6 base-signal reuse.
-- Budgeted staged search, early stopping, successive halving, and optional Optuna.
+Delivered in v0.8.0:
+
+- Bounded cross-strategy indicator DAG caching for common price, trend,
+  volatility, channel, ATR, and ADX dependencies.
+- Deterministic Successive Halving with per-strategy candidate budgets,
+  increasing validation prefixes, transactional stage resume, and explicit
+  stage-decision exports.
+- Candidate isolation now withholds test observations as well as test metrics
+  and boundaries until one final selection has been made.
+
+Next scale and evidence work:
+
+- Optional Optuna integration behind the same sealed-development contract.
 - Optional Parquet/DuckDB analytics exports on top of the SQLite journal.
 - Typed `StrategySpec`, `RunConfig`, `RunResult`, and plugin entry points.
 - Cross-asset and cross-regime frozen benchmark suites.

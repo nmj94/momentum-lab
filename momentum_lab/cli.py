@@ -35,6 +35,14 @@ def main():
     search_mode.add_argument(
         "--exhaustive", dest="quick", action="store_false", help="Run the full grid; can take days for ML strategies"
     )
+    search_mode.add_argument(
+        "--successive-halving",
+        dest="search_method",
+        action="store_const",
+        const="successive_halving",
+        help="Budgeted deterministic search with staged validation resources",
+    )
+    parser.set_defaults(search_method="grid")
     strategy_mode = parser.add_mutually_exclusive_group()
     strategy_mode.add_argument(
         "--strategies", type=str, default=None, help="Comma-separated strategy names (default: non-ML strategies)"
@@ -43,6 +51,20 @@ def main():
         "--all-strategies", action="store_true", help="Include experimental ML strategies as well"
     )
     parser.add_argument("--workers", type=int, default=1, help="Parallel workers")
+    parser.add_argument(
+        "--candidate-budget",
+        type=int,
+        default=256,
+        help="Initial deterministic candidates per strategy for successive halving",
+    )
+    parser.add_argument("--halving-factor", type=int, default=3, help="Candidate reduction factor per stage")
+    parser.add_argument("--halving-stages", type=int, default=3, help="Maximum validation-resource stages")
+    parser.add_argument(
+        "--indicator-cache-size",
+        type=int,
+        default=256,
+        help="Maximum reusable indicator nodes per process; 0 disables caching",
+    )
     parser.add_argument("--cost", type=float, default=1.0, help="Transaction cost in bps")
     parser.add_argument("--slippage", type=float, default=0.0, help="Additional slippage in bps")
     parser.add_argument("--financing-rate", type=float, default=0.0, help="Annual financing rate (decimal)")
@@ -174,6 +196,11 @@ def main():
         min_validation_exposure=args.min_val_exposure,
         workers=args.workers,
         quick=args.quick,
+        search_method=args.search_method,
+        candidate_budget=args.candidate_budget,
+        halving_factor=args.halving_factor,
+        halving_stages=args.halving_stages,
+        indicator_cache_size=args.indicator_cache_size,
         top_n=args.top,
         start=args.start,
         end=args.end,

@@ -79,6 +79,8 @@ def _diagnostic_rows(summary):
     return [
         ("Selection metric", overall.get("selection_metric")),
         ("Trials", overall.get("trials")),
+        ("Full-development trials", overall.get("full_development_trials")),
+        ("Sharpe-dispersion source", overall.get("sharpe_std_source")),
         ("Eligible candidates", overall.get("eligible_candidates")),
         ("Deflated Sharpe probability", _display(selected.get("deflated_sharpe_probability"), percent=True)),
         ("Validation Sharpe 95% CI", f"[{_display(ci[0])}, {_display(ci[1])}]"),
@@ -86,6 +88,33 @@ def _diagnostic_rows(summary):
         ("Walk-forward mean outer Sharpe", _display(walk_forward.get("mean_outer_sharpe"))),
         ("Walk-forward worst outer Sharpe", _display(walk_forward.get("worst_outer_sharpe"))),
     ]
+
+
+def _search_rows(summary, run_config):
+    search = summary.get("search_diagnostics") or {}
+    cache = summary.get("indicator_cache") or {}
+    rows = [
+        ("Method", search.get("method", run_config.get("search_method", "grid"))),
+        ("Final full-development candidates", summary.get("n_results", 0)),
+    ]
+    if search.get("method") == "successive_halving":
+        rows.extend(
+            [
+                ("Initial candidates", search.get("initial_candidates")),
+                ("Validation resources (bars)", " → ".join(map(str, search.get("resource_bars") or []))),
+                ("Total stage evaluations", search.get("total_stage_evaluations")),
+                ("Eliminated candidates", search.get("eliminated_candidates")),
+            ]
+        )
+    rows.extend(
+        [
+            ("Indicator-cache entries/process", cache.get("max_entries_per_process")),
+            ("Observed cache hit rate", _display(cache.get("hit_rate"), percent=True)),
+            ("Observed cache hits", cache.get("hits")),
+            ("Observed cache misses", cache.get("misses")),
+        ]
+    )
+    return rows
 
 
 def render_markdown_report(summary: Mapping, run_config: Mapping) -> str:
@@ -118,6 +147,8 @@ def render_markdown_report(summary: Mapping, run_config: Mapping) -> str:
     )
     lines.extend(["", "## Selection diagnostics", "", "| Diagnostic | Value |", "|---|---:|"])
     lines.extend(f"| {label} | {_display(value)} |" for label, value in _diagnostic_rows(summary))
+    lines.extend(["", "## Search efficiency", "", "| Diagnostic | Value |", "|---|---:|"])
+    lines.extend(f"| {label} | {_display(value)} |" for label, value in _search_rows(summary, run_config))
     lines.extend(["", "## Execution and financing assumptions", "", "| Assumption | Value |", "|---|---:|"])
     lines.extend(f"| {label} | {_display(run_config.get(key))} |" for key, label in _ASSUMPTIONS if key in run_config)
 
@@ -167,6 +198,10 @@ def render_html_report(summary: Mapping, run_config: Mapping) -> str:
     diagnostics = "".join(
         f"<tr><th>{esc(label)}</th><td>{esc(_display(value))}</td></tr>" for label, value in _diagnostic_rows(summary)
     )
+    search_efficiency = "".join(
+        f"<tr><th>{esc(label)}</th><td>{esc(_display(value))}</td></tr>"
+        for label, value in _search_rows(summary, run_config)
+    )
     assumptions = "".join(
         f"<tr><th>{esc(label)}</th><td>{esc(_display(run_config.get(key)))}</td></tr>"
         for key, label in _ASSUMPTIONS
@@ -198,6 +233,7 @@ h1{{margin:0 0 8px;font-size:28px}}h2{{margin:0 0 14px;font-size:20px}}p.note{{c
 <dt>Experiments</dt><dd>{esc(summary.get("n_results", 0))} ({esc(summary.get("n_errors", 0))} errors)</dd><dt>Selected strategy</dt><dd>{esc(strategy)}</dd><dt>Parameters</dt><dd><code>{esc(params)}</code></dd></dl></header>
 <section><h2>Performance evidence</h2><table><thead><tr><th>Metric</th><th>Validation</th><th>Sealed test</th><th>Buy &amp; hold test</th></tr></thead><tbody>{metric_rows}</tbody></table></section>
 <section><h2>Selection diagnostics</h2><table><tbody>{diagnostics}</tbody></table></section>
+<section><h2>Search efficiency</h2><table><tbody>{search_efficiency}</tbody></table></section>
 <section><h2>Execution and financing assumptions</h2><table><tbody>{assumptions}</tbody></table></section>
 {sensitivity_section}
 <section><h2>Interpretation limits</h2><p>Selection-bias diagnostics reduce but do not remove overfitting risk. Capacity is estimated from bar volume, not an order-book replay; taxes, halts, queue position, and live operational risk remain outside this model.</p></section>

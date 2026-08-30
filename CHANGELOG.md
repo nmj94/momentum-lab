@@ -3,6 +3,31 @@
 All notable changes are documented here. The project follows semantic versioning
 for its public Python API and run/checkpoint schema.
 
+## [0.8.0] - 2026-08-29
+
+### Scale-aware search
+
+- Added deterministic Successive Halving with configurable per-strategy
+  candidate budgets, reduction factor, and increasing validation prefixes.
+  Partial-resource rows never enter final selection; only the full-development
+  survivors are promoted to the canonical result table.
+- Counts every staged evaluation in the Deflated-Sharpe multiple-testing
+  hurdle and estimates candidate-score dispersion from the equal-resource
+  initial stage, rather than pretending only the final survivors were tried.
+- Added transactional SQLite stage journaling, deterministic resume, and a
+  `search_stages.csv` audit trail with resource and advancement decisions.
+- Candidate processes now receive development observations only. Test prices,
+  boundaries, and metrics remain sealed until one final candidate is selected.
+
+### Computation reuse
+
+- Added a bounded per-process indicator DAG shared across strategies, including
+  returns, SMA/EMA/WMA/DEMA, volatility, RSI, channels, ATR, ADX, and dependent
+  nodes. A zero-sized cache preserves the uncached execution path.
+- Added staged-search and indicator-cache diagnostics to JSON, Markdown, and
+  HTML reports, plus CLI and `SearchConfig` controls.
+- Advanced the research engine schema to 5 and package version to 0.8.0.
+
 ## [0.7.0] - 2026-08-29
 
 ### Market realism
