@@ -274,6 +274,54 @@ def test_concurrent_claims_cannot_both_claim_first_reveal():
     assert len(_events(registry)) == 1
 
 
+@pytest.mark.parametrize("prior_replay", [False, True])
+def test_legacy_unpinned_cache_preserves_completion_or_prior_replay_without_reader_writes(prior_replay):
+    registry = StudyRegistry()
+    context = _registered(registry)
+    first = registry.claim_test(**context)["access"]["event_id"]
+    second = registry.claim_test(**context, allow_reuse=True, reason="retry")["access"]["event_id"]
+    registry.complete_test(second, {"score": 2})
+    registry.complete_test(first, {"score": 1})
+    if prior_replay:
+        assert registry.claim_test(**context)["payload"] == {"score": 2}
+    with sqlite3.connect(registry.path) as connection:
+        # Simulate pre-fix records. Without replay, stored completion time
+        # chooses second; with replay, prefer that source despite clock drift.
+        connection.execute("UPDATE observations SET dedupe_key=NULL")
+        connection.execute("UPDATE observations SET completed_at=? WHERE event_id=?", ("2020-05-02", second))
+        connection.execute(
+            "UPDATE observations SET completed_at=? WHERE event_id=?",
+            ("2020-05-01" if prior_replay else "2020-05-03", first),
+        )
+    before = registry.path.read_bytes()
+    assert StudyRegistry(create=False).status("first")["event_id"] == second
+    assert registry.path.read_bytes() == before
+    replay = registry.claim_test(**context)
+    assert replay["payload"] == {"score": 2}
+    assert replay["access"]["event_id"] == second
+    assert next(event for event in _events(registry) if event["event_id"] == second)["dedupe_key"] is not None
+
+
+@pytest.mark.parametrize("payload", [None, [], {"score": float("nan")}, {"score": float("inf")}, {"text": "\ud800"}])
+def test_invalid_cached_summaries_leave_the_reservation_intact(payload):
+    registry = StudyRegistry()
+    event_id = registry.claim_test(**_registered(registry))["access"]["event_id"]
+    with pytest.raises(RegistryError):
+        registry.complete_test(event_id, payload)
+    assert _events(registry)[0]["status"] == "reserved"
+
+
+def test_cached_summary_size_guard_leaves_reservation_intact(monkeypatch):
+    import momentum_lab.governance as module
+
+    registry = StudyRegistry()
+    event_id = registry.claim_test(**_registered(registry))["access"]["event_id"]
+    monkeypatch.setattr(module, "MAX_RECORD_BYTES", 64)
+    with pytest.raises(RegistryError, match="limit"):
+        registry.complete_test(event_id, {"text": "x" * 65})
+    assert _events(registry)[0]["status"] == "reserved"
+
+
 def test_cached_payload_and_protocol_corruption_fail_closed():
     registry = StudyRegistry()
     context = _registered(registry)

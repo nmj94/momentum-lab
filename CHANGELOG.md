@@ -3,6 +3,42 @@
 All notable changes are documented here. The project follows semantic versioning
 for its public Python API and run/checkpoint schema.
 
+## [0.14.1] - 2026-09-03
+
+### Bug and research-integrity audit
+
+- Give symbolic Yahoo tickers collision-free, uppercase cache identities;
+  ambiguous legacy symbol caches are not reused or deleted. Round-trip CSV
+  floats exactly, reject invalid metadata/volume/session dates, and preserve
+  exchange-local daily labels when removing provider timezones.
+- Preserve actual constant and single-observation gains/losses and treat
+  bankruptcy as absorbing. Reject non-finite/non-real observations and numeric
+  overflow; keep finite legacy undefined-ratio sentinels, but exclude undefined
+  Sharpe from candidate selection and parameter-sensitivity scores.
+- Use the selected execution-price column in sensitivity analysis, including
+  next-open studies, without changing signal lag or development-only bounds.
+- Fail closed on resume without the original configuration; archive the full
+  prior legacy artifact set before a replacement run, retaining configuration,
+  journals and reports together and removing stale current-output filenames.
+- Atomically pin the first completed single-asset reveal independently of claim
+  order, retaining old registry identity/schema/history and read-only behavior.
+  Reject malformed, non-finite or oversized protocol/selection/summary objects.
+- Use exclusive same-directory temporary files for cache and search exports,
+  preserving the previous file on write/replace failure and avoiding same-process
+  writer collisions. This does not add a whole-run transaction or coordinator lock.
+- Reject ambiguous/oversized JSON configs, non-finite numbers (including exponent
+  overflow), invalid search controls, invalid volatility targets and non-real
+  schedules. CLI validation errors return actionable usage errors, not tracebacks.
+- Add independent reproductions and regression coverage, enforce `uv.lock` in
+  CI environment/test commands, and correct the outdated supported-version policy.
+
+Compatibility: engine/checkpoint schema 5, base registry/user-version 1, portfolio
+schemas and all 24 frozen accounting references are unchanged. Edge-case metrics
+and the corrected next-open sensitivity output intentionally differ. Existing
+source/version-locked runs need their original environment; upgrade with new
+runs/protocols instead of bypassing checks. See [AUDIT_2026-09-03.md](AUDIT_2026-09-03.md)
+for findings, validation evidence, migration cautions and remaining limitations.
+
 ## [0.14.0] - 2026-08-30
 
 ### Declared historical membership and registered portfolio studies

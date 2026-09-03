@@ -57,6 +57,17 @@ momentum-lab SPY --all-strategies --exhaustive --workers 8
 The future PyPI distribution name is `momentum-research-lab`; the Python import
 and CLI remain `momentum_lab` and `momentum-lab`.
 
+## v0.14.1 integrity fixes
+
+Fixed symbolic-ticker cache collisions and CSV precision drift, constant-return
+and bankruptcy metrics, next-open sensitivity pricing, unsafe resume without
+provenance, incomplete rerun backups, and single-asset reveal cache ordering.
+Added strict input/config validation and collision-free atomic file writes;
+CI now enforces the committed dependency lock. The 24 frozen accounting cases
+remain unchanged. See [the audit](AUDIT_2026-09-03.md) for reproductions, tests,
+compatibility notes and limitations. Use new runs/protocols after upgrading;
+do not bypass the source/version checks on older research.
+
 ## What changed in v0.14
 
 - Added fixed-rule **registered portfolio studies**: develop first, explicitly

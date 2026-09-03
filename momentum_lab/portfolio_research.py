@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 
 from ._version import __version__
+from .config import _read_json_config
 from .datasets import DatasetError, load_dataset
 from .governance import RegistryError, StudyRegistry
 from .portfolio import (
@@ -92,18 +93,9 @@ class PortfolioConfig:
     @classmethod
     def from_json(cls, path):
         path = Path(path)
-
-        def unique_fields(pairs):
-            values = {}
-            for key, value in pairs:
-                if key in values:
-                    raise PortfolioError(f"Duplicate portfolio config field: {key}")
-                values[key] = value
-            return values
-
         try:
-            values = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique_fields)
-        except (OSError, ValueError) as exc:
+            values = _read_json_config(path)
+        except (OSError, ValueError, TypeError) as exc:
             raise PortfolioError(f"Cannot read portfolio config {path}: {exc}") from exc
         config = cls.from_mapping(values)
         _validate_dataset_mapping(config.datasets)

@@ -140,6 +140,28 @@ The coordinator necessarily holds the price snapshot to prepare/hash/split it.
 "Sealed" refers to this workflow's evaluation/output boundary, **not hiding raw
 data in memory or preventing direct filesystem/Python access**.
 
+### Resume and legacy rerun integrity (v0.14.1)
+
+Every `--resume`, including an unregistered legacy run, requires the original
+`run_config.json` and matching registry identity. Missing provenance is an error,
+not a warning followed by loading unverifiable checkpoint rows. Restore the
+original files/environment or use a new run ID; never clear observation history
+to make a compatibility check pass.
+
+When intentionally reusing an unregistered run ID **without** `--resume`, the
+previous configuration, SQLite/CSV journals, summary, rankings, sensitivity CSV
+and reports are moved to matching timestamped `*.bak.*` names before publishing
+the new configuration. The SQLite WAL is checkpointed first; an invalid or busy
+journal fails rather than being repaired as part of a backup. Unrelated files
+are left alone. This prevents an empty/failed replacement from showing an old
+winner under the current run's filename. Registered runs still require an empty
+directory or a valid resume; they cannot be overwritten this way.
+
+Publication is atomic **per file**, with exclusively created staging files, not
+a transaction over an entire run directory. Do not run multiple coordinators
+against the same run ID. Keep the complete backup set with its original source,
+data, environment and registry; do not combine artifacts from different runs.
+
 ## Cross-run observation matching
 
 The shared SQLite registry lives in the OS user-data directory for
@@ -208,6 +230,19 @@ reveal of the same fixed study reuses that result without another test backtest.
 It is labelled `previously_revealed`, and a separate `reveal_replay` event links
 the new access to the original evaluation. It needs no new reuse override because
 it is a reread of existing evidence, not a new evaluation.
+
+Since v0.14.1, a single-asset study pins the first completed result in the same
+transaction that completes its reservation. An earlier claim finishing later
+cannot replace that cached result, even when completion timestamps are equal.
+This uses the existing unique observation key; schema/user-version 1 and all
+observation history are preserved. Protocols, selections and summaries must be
+finite JSON objects no larger than 4 MiB each.
+
+For legacy unpinned records, an existing replay's original source takes
+precedence; otherwise recorded completion time and event order select the cache.
+The next writable claim/completion pins that choice. Read-only status does not
+write to the registry or display scores. Historical ordering cannot be proven
+where neither a reliable timestamp nor an earlier replay recorded it.
 
 Reservations survive exceptions, keyboard interruption and failed exports.
 `reserved` and `failed` records count as possible exposure. Retrying an incomplete

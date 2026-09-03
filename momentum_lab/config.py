@@ -6,10 +6,54 @@ CI, a notebook, or a later resume operation.
 """
 
 import json
+import math
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any
+
+MAX_CONFIG_BYTES = 1024 * 1024
+
+
+def _read_json_config(path):
+    """Read one bounded, unambiguous JSON object; never accept NaN/Infinity."""
+    path = Path(path)
+
+    def unique_fields(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"Duplicate config field: {key}")
+            result[key] = value
+        return result
+
+    def reject_constant(value):
+        raise ValueError(f"Non-finite JSON value: {value}")
+
+    def finite_float(value):
+        number = float(value)
+        if not math.isfinite(number):
+            raise ValueError(f"Non-finite JSON value: {value}")
+        return number
+
+    try:
+        if not path.is_file():
+            raise ValueError("expected an existing regular file")
+        with path.open("rb") as handle:
+            raw = handle.read(MAX_CONFIG_BYTES + 1)
+        if len(raw) > MAX_CONFIG_BYTES:
+            raise ValueError("configuration exceeds the 1 MiB limit")
+        values = json.loads(
+            raw.decode("utf-8-sig"),
+            object_pairs_hook=unique_fields,
+            parse_constant=reject_constant,
+            parse_float=finite_float,
+        )
+    except (OSError, ValueError, RecursionError) as exc:
+        raise ValueError(f"Cannot read JSON config {path}: {exc}") from exc
+    if not isinstance(values, Mapping):
+        raise TypeError("config must contain a JSON object")
+    return values
 
 
 @dataclass
@@ -71,6 +115,8 @@ class SearchConfig:
     @classmethod
     def from_mapping(cls, values: Mapping[str, Any]) -> "SearchConfig":
         """Build a config and reject misspelled keys early."""
+        if not isinstance(values, Mapping) or not all(isinstance(key, str) for key in values):
+            raise TypeError("search config must be a mapping with string keys")
         allowed = {field.name for field in fields(cls)}
         unknown = sorted(set(values) - allowed)
         if unknown:
@@ -90,14 +136,7 @@ class SearchConfig:
     def from_json(cls, path: str | Path) -> "SearchConfig":
         """Load a config from a UTF-8 JSON file."""
         config_path = Path(path)
-        try:
-            values = json.loads(config_path.read_text(encoding="utf-8"))
-        except FileNotFoundError as exc:
-            raise ValueError(f"search config not found: {config_path}") from exc
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"invalid JSON search config {config_path}: {exc.msg}") from exc
-        if not isinstance(values, Mapping):
-            raise TypeError("search config must contain a JSON object")
+        values = _read_json_config(config_path)
         # Dataset paths in reusable JSON configs are relative to that config,
         # not the caller's working directory. Other established path semantics
         # remain unchanged.

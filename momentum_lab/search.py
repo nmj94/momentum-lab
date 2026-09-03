@@ -8,7 +8,6 @@ import importlib.metadata
 import importlib.util
 import json
 import math
-import os
 import platform
 import sqlite3
 import subprocess
@@ -18,6 +17,7 @@ from collections import OrderedDict
 from contextlib import closing
 from datetime import datetime, timezone
 from itertools import combinations, count
+from numbers import Real
 from pathlib import Path
 from statistics import NormalDist
 from uuid import uuid4
@@ -26,6 +26,7 @@ import numpy as np
 import pandas as pd
 
 from ._version import __version__
+from .artifacts import atomic_text_output
 from .backtest import RISK_FREE_RATE, backtest, evaluate, get_buy_and_hold
 from .config import load_search_config
 from .data import infer_annualization, prepare_data
@@ -250,24 +251,13 @@ def _environment_fingerprint(manifest):
 
 
 def _write_text_atomic(path, content):
-    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    try:
-        with tmp_path.open("w", encoding="utf-8") as handle:
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        tmp_path.replace(path)
-    finally:
-        tmp_path.unlink(missing_ok=True)
+    with atomic_text_output(path) as handle:
+        handle.write(content)
 
 
 def _write_frame_atomic(frame, path):
-    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    try:
-        frame.to_csv(tmp_path, index=False, encoding="utf-8-sig")
-        tmp_path.replace(path)
-    finally:
-        tmp_path.unlink(missing_ok=True)
+    with atomic_text_output(path, encoding="utf-8-sig", newline="") as handle:
+        frame.to_csv(handle, index=False)
 
 
 def _results_rows(results):
@@ -521,17 +511,10 @@ def _iter_stage_store(path):
 
 
 def _export_stage_store(store_path, csv_path):
-    tmp_path = csv_path.with_name(f".{csv_path.name}.{os.getpid()}.tmp")
-    try:
-        with tmp_path.open("w", encoding="utf-8-sig", newline="") as handle:
-            writer = csv.DictWriter(handle, fieldnames=STAGE_EXPORT_COLUMNS)
-            writer.writeheader()
-            writer.writerows(_iter_stage_store(store_path))
-            handle.flush()
-            os.fsync(handle.fileno())
-        tmp_path.replace(csv_path)
-    finally:
-        tmp_path.unlink(missing_ok=True)
+    with atomic_text_output(csv_path, encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=STAGE_EXPORT_COLUMNS)
+        writer.writeheader()
+        writer.writerows(_iter_stage_store(store_path))
 
 
 def _stage_store_count(path):
@@ -573,18 +556,11 @@ def _iter_result_store(path, batch_size=10_000):
 
 def _export_result_store(store_path, csv_path):
     """Atomically refresh the human-readable CSV from the SQLite journal."""
-    tmp_path = csv_path.with_name(f".{csv_path.name}.{os.getpid()}.tmp")
-    try:
-        with tmp_path.open("w", encoding="utf-8-sig", newline="") as handle:
-            writer = csv.DictWriter(handle, fieldnames=RESULT_COLUMNS)
-            writer.writeheader()
-            for result in _iter_result_store(store_path):
-                writer.writerow(_results_rows([result])[0])
-            handle.flush()
-            os.fsync(handle.fileno())
-        tmp_path.replace(csv_path)
-    finally:
-        tmp_path.unlink(missing_ok=True)
+    with atomic_text_output(csv_path, encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=RESULT_COLUMNS)
+        writer.writeheader()
+        for result in _iter_result_store(store_path):
+            writer.writerow(_results_rows([result])[0])
 
 
 def _store_counts(path):
@@ -693,15 +669,15 @@ def _check_resume_compatibility(run_dir, metadata):
         return
     config_path = run_dir / "run_config.json"
     if not config_path.exists():
-        warnings.warn(
-            f"Cannot verify resume compatibility: {config_path} is missing.",
-            RuntimeWarning,
+        raise ValueError(
+            f"Cannot verify resume compatibility: {config_path} is missing; restore it or use a new run_id."
         )
-        return
     try:
         previous = json.loads(config_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError(f"cannot read previous run config {config_path}: {exc}") from exc
+    if not isinstance(previous, dict):
+        raise TypeError(f"previous run config {config_path} must contain an object")
     mismatched = [f for f in _RESUME_COMPAT_FIELDS if previous.get(f) != metadata.get(f)]
     if mismatched:
         names = ", ".join(mismatched)
@@ -709,6 +685,55 @@ def _check_resume_compatibility(run_dir, metadata):
             f"resume configuration mismatch on {names}: the checkpoint in {run_dir} was produced "
             f"under a different configuration. Use a new run_id or restore the original settings."
         )
+
+
+def _archive_run_artifacts(run_dir):
+    """Preserve the complete prior run before reusing a legacy run ID.
+
+    Only owned artifact names are moved. Configuration, completion markers and
+    reports must remain paired with their old journals; stale rankings must not
+    survive under current filenames after a no-selection/failed replacement.
+    """
+    names = (
+        "run_config.json",
+        "summary.json",
+        "report.md",
+        "report.html",
+        "top_results.csv",
+        "robustness.csv",
+        "all_results.csv",
+        "search_stages.csv",
+        "results.sqlite3",
+    )
+    paths = [run_dir / name for name in names if (run_dir / name).exists()]
+    if not paths:
+        return
+    if any(not path.is_file() or path.is_symlink() for path in paths):
+        raise ValueError("existing run artifacts must be regular files before archiving")
+    store_path = run_dir / "results.sqlite3"
+    if store_path.exists():
+        # Do not create/repair a schema during backup. Merge committed WAL
+        # pages first, and fail closed if another writer is still using it.
+        uri = store_path.resolve().as_uri() + "?mode=rw"
+        with closing(sqlite3.connect(uri, uri=True, timeout=15)) as connection:
+            busy, _, _ = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            if busy:
+                raise ValueError("previous result journal is busy; cannot safely archive this run")
+    stamp = f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{uuid4().hex[:16]}"
+    moved = []
+    for path in paths:
+        backup = path.with_name(f"{path.stem}.{stamp}.bak{path.suffix}")
+        path.rename(backup)
+        moved.append(backup.name)
+        if path == store_path:
+            for suffix in ("-wal", "-shm"):
+                sidecar = Path(f"{store_path}{suffix}")
+                if sidecar.exists():
+                    sidecar.rename(Path(f"{backup}{suffix}"))
+    warnings.warn(
+        f"Previous run artifacts moved to {', '.join(moved)}. Pass resume=True to continue them instead.",
+        RuntimeWarning,
+    )
 
 
 def _split_periods(index):
@@ -852,7 +877,9 @@ def _period_metrics(bt, effective_positions, start, end, risk_free_rate, annuali
             "borrow_blocked_bars": int(borrow_blocked.sum()),
         }
     )
-    if metrics["exposure"] <= 1e-12:
+    if metrics["exposure"] <= 1e-12 or len(period_returns) < 2 or period_returns.std() < 1e-10:
+        # evaluate() keeps a legacy zero for undefined ratios. It is not a
+        # valid candidate score and must not outrank a genuinely losing rule.
         metrics["sharpe"] = -99.0
     return metrics
 
@@ -1443,6 +1470,16 @@ def run_search(
         generate_report = configured["generate_report"]
 
     validate_study_options(study_id, reveal_test, allow_test_reuse, test_reuse_reason)
+    for name, value in (
+        ("quick", quick),
+        ("robust", robust),
+        ("use_cache", use_cache),
+        ("keep_all_results", keep_all_results),
+        ("resume", resume),
+        ("generate_report", generate_report),
+    ):
+        if not isinstance(value, (bool, np.bool_)):
+            raise TypeError(f"{name} must be boolean")
     if dataset is not None:
         annualization = resolve_dataset_annualization(read_dataset_manifest(dataset), annualization)
     annualization = infer_annualization(ticker) if annualization is None else annualization
@@ -1500,7 +1537,10 @@ def run_search(
         or not 0 < max_participation <= 1
     ):
         raise ValueError("max_participation must be in (0, 1]")
-    if not np.isfinite(cash_rate) or not np.isfinite(short_rebate_rate) or not np.isfinite(risk_free_rate):
+    if any(
+        isinstance(value, (bool, np.bool_)) or not isinstance(value, Real) or not np.isfinite(value)
+        for value in (cash_rate, short_rebate_rate, risk_free_rate)
+    ):
         raise ValueError("cash_rate, short_rebate_rate and risk_free_rate must be finite")
     if cash_rate <= -1 or short_rebate_rate <= -1:
         raise ValueError("cash_rate and short_rebate_rate must be greater than -1")
@@ -1532,6 +1572,20 @@ def run_search(
         raise ValueError("validation_folds must be an even integer between 2 and 10")
     if min_validation_bars < 2:
         raise ValueError("min_validation_bars must be at least 2")
+    for name, value in (
+        ("min_validation_bars", min_validation_bars),
+        ("min_validation_trades", min_validation_trades),
+        ("top_n", top_n),
+        ("workers", workers),
+    ):
+        if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, np.integer)):
+            raise TypeError(f"{name} must be an integer")
+    if (
+        isinstance(min_validation_exposure, (bool, np.bool_))
+        or not isinstance(min_validation_exposure, Real)
+        or not np.isfinite(min_validation_exposure)
+    ):
+        raise ValueError("minimum validation exposure must be a finite number")
     if min_validation_trades < 0 or min_validation_exposure < 0:
         raise ValueError("minimum validation trades and exposure cannot be negative")
     if top_n < 1:
@@ -1551,7 +1605,7 @@ def run_search(
         raise ValueError("halving_stages must be at least 1")
     if indicator_cache_size < 0:
         raise ValueError("indicator_cache_size cannot be negative")
-    if not 0 < robust_frac <= 1:
+    if isinstance(robust_frac, (bool, np.bool_)) or not isinstance(robust_frac, Real) or not 0 < robust_frac <= 1:
         raise ValueError("robust_frac must be in (0, 1]")
     if not isinstance(generate_report, (bool, np.bool_)):
         raise TypeError("generate_report must be boolean")
@@ -1560,17 +1614,27 @@ def run_search(
 
     base_result_dir = Path(result_dir) if result_dir is not None else RESULT_DIR
     safe_ticker = str(ticker).replace("/", "_").replace("^", "_")
-    run_id = run_id or f"{safe_ticker}_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{uuid4().hex[:8]}"
-    if run_id in {".", ".."} or Path(run_id).name != run_id:
+    if run_id is not None and (
+        not isinstance(run_id, str)
+        or not run_id
+        or run_id in {".", ".."}
+        or "/" in run_id
+        or "\\" in run_id
+        or Path(run_id).name != run_id
+        or any(ord(char) < 32 or ord(char) == 127 for char in run_id)
+    ):
         raise ValueError("run_id must be a single directory name")
+    run_id = run_id or f"{safe_ticker}_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{uuid4().hex[:8]}"
     run_dir = base_result_dir / run_id
     previous_config_path = run_dir / "run_config.json"
     if study_id and not resume and run_dir.exists() and any(run_dir.iterdir()):
         raise ValueError("registered runs require a new empty run directory or resume=True")
-    if study_id and resume and not previous_config_path.is_file():
-        raise ValueError("registered resume requires its original run_config.json and registry")
+    if resume and not previous_config_path.is_file():
+        raise ValueError("resume requires its original run_config.json and registry")
     if previous_config_path.is_file():
         previous_config = json.loads(previous_config_path.read_text(encoding="utf-8"))
+        if not isinstance(previous_config, dict):
+            raise ValueError("previous run_config.json must contain an object")
         if previous_config.get("study_id") and previous_config["study_id"] != study_id:
             raise ValueError("cannot change or disable study_id in an existing registered run")
     registry = StudyRegistry(registry_path, create=not resume and not reveal_test)
@@ -1726,9 +1790,13 @@ def run_search(
                 },
             }
         )
-        test_access = registry.register(study_id, protocol)
+        test_access = registry.register(study_id, _jsonable(protocol))
         metadata["study_protocol_sha256"] = test_access["protocol_sha256"]
-    _write_text_atomic(run_dir / "run_config.json", json.dumps(metadata, ensure_ascii=False, indent=2))
+    if not resume:
+        _archive_run_artifacts(run_dir)
+    _write_text_atomic(
+        run_dir / "run_config.json", json.dumps(_jsonable(metadata), ensure_ascii=False, indent=2, allow_nan=False)
+    )
     print(f"  Data: {df.index[0].date()} ~ {df.index[-1].date()}, {n} bars")
     print(f"  Train: {periods['train'][0].date()} ~ {periods['train'][1].date()}")
     print(f"  Val:   {periods['val'][0].date()} ~ {periods['val'][1].date()}")
@@ -1769,34 +1837,6 @@ def run_search(
     all_csv = run_dir / "all_results.csv"
     stage_csv = run_dir / "search_stages.csv"
     store_path = run_dir / "results.sqlite3"
-    if not resume and (all_csv.exists() or stage_csv.exists() or store_path.exists()):
-        # Preserve previous artifacts, but start from an empty transactional
-        # journal when a run-id is intentionally reused without --resume.
-        stamp = f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{uuid4().hex[:6]}"
-        moved = []
-        if all_csv.exists():
-            backup = run_dir / f"all_results.{stamp}.bak.csv"
-            all_csv.rename(backup)
-            moved.append(backup.name)
-        if stage_csv.exists():
-            backup = run_dir / f"search_stages.{stamp}.bak.csv"
-            stage_csv.rename(backup)
-            moved.append(backup.name)
-        if store_path.exists():
-            with closing(_open_result_store(store_path)) as connection:
-                connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            backup = run_dir / f"results.{stamp}.bak.sqlite3"
-            store_path.rename(backup)
-            for suffix in ("-wal", "-shm"):
-                sidecar = Path(f"{store_path}{suffix}")
-                if sidecar.exists():
-                    sidecar.rename(Path(f"{backup}{suffix}"))
-            moved.append(backup.name)
-        warnings.warn(
-            f"Previous run artifacts moved to {', '.join(moved)}. Pass resume=True to continue them instead.",
-            RuntimeWarning,
-        )
-
     if resume:
         if not store_path.exists() and all_csv.exists():
             _migrate_csv_checkpoint(all_csv, store_path)
@@ -2281,6 +2321,7 @@ def run_search(
             frac=robust_frac,
             backtest_kwargs=development_backtest_kwargs,
             risk_free_rate=risk_free_rate,
+            execution_price_column=execution_price_column,
         )
         if robustness.get("error"):
             print(f"    Skipped: {robustness['error']}")

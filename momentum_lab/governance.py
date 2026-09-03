@@ -21,6 +21,7 @@ import pandas as pd
 from platformdirs import user_data_dir
 
 REGISTRY_SCHEMA_VERSION = 1
+MAX_RECORD_BYTES = 4 * 1024 * 1024
 AUDIT_WARNING = (
     "Local registry evidence only; history outside this registry is unknown. "
     "First recorded reveal is not proof of untouched out-of-sample data. "
@@ -80,6 +81,18 @@ def _canonical(value):
 
 def _hash(value):
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _record_json(value, name):
+    if not isinstance(value, dict):
+        raise RegistryError(f"{name} must be a JSON object")
+    try:
+        text = _canonical(value)
+        if len(text.encode("utf-8")) > MAX_RECORD_BYTES:
+            raise ValueError("record exceeds the 4 MiB limit")
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise RegistryError(f"{name} must be bounded finite JSON: {exc}") from exc
+    return text
 
 
 def _ticker(value):
@@ -203,9 +216,54 @@ class StudyRegistry:
             raise RegistryError(f"study {study_id!r} is not registered; run a sealed search first")
         if _hash(row["protocol_json"]) != row["protocol_sha256"]:
             raise RegistryError("registered protocol integrity check failed")
-        if row["selection_json"] is not None and _hash(row["selection_json"]) != row["selection_sha256"]:
+        if len({row[name] is None for name in ("selection_json", "selection_sha256", "selected_at")}) != 1 or (
+            row["selection_json"] is not None and _hash(row["selection_json"]) != row["selection_sha256"]
+        ):
             raise RegistryError("frozen selection integrity check failed")
         return row
+
+    @staticmethod
+    def _cached_reveal(connection, study_id, *, pin=False):
+        """Pin first completion using the existing unique dedupe key, not claim order.
+
+        Legacy records have no key. Prefer their first recorded replay source;
+        otherwise use stored completion time/id. A writable claim/completion
+        pins that historical choice atomically; metadata readers never write.
+        No schema migration, new exposure event or registry reset is needed.
+        """
+        key = f"registered-reveal-cache:{study_id}"
+        cached = connection.execute("SELECT * FROM observations WHERE dedupe_key=?", (key,)).fetchone()
+        if cached is None:
+            replay = connection.execute(
+                "SELECT source_event_id FROM observations WHERE study_id=? AND kind='reveal_replay' ORDER BY id LIMIT 1",
+                (study_id,),
+            ).fetchone()
+            if replay:
+                cached = connection.execute(
+                    "SELECT * FROM observations WHERE event_id=?", (replay["source_event_id"],)
+                ).fetchone()
+                if cached is None:
+                    raise RegistryError("cached reveal source integrity check failed")
+            else:
+                cached = connection.execute(
+                    "SELECT * FROM observations WHERE study_id=? AND kind='registered_reveal' "
+                    "AND status='completed' ORDER BY completed_at, id LIMIT 1",
+                    (study_id,),
+                ).fetchone()
+        if cached is not None:
+            if (
+                cached["study_id"] != study_id
+                or cached["kind"] != "registered_reveal"
+                or cached["status"] != "completed"
+                or cached["completed_at"] is None
+                or cached["dedupe_key"] not in (None, key)
+                or cached["result_json"] is None
+                or _hash(cached["result_json"]) != cached["result_sha256"]
+            ):
+                raise RegistryError("cached reveal integrity check failed; will not silently re-evaluate")
+            if pin and cached["dedupe_key"] is None:
+                connection.execute("UPDATE observations SET dedupe_key=? WHERE event_id=?", (key, cached["event_id"]))
+        return cached
 
     @staticmethod
     def _overlaps(connection, ticker, start, end):
@@ -241,7 +299,7 @@ class StudyRegistry:
         validate_study_options(study_id)
         if study_id is None:
             raise RegistryError("registration requires study_id")
-        protocol = json.loads(_canonical(protocol))
+        protocol = json.loads(_record_json(protocol, "Protocol"))
         protocol["ticker"] = _ticker(protocol["ticker"])
         _snapshot(protocol["data_snapshot"])
         periods = {name: _dates(*protocol["periods"][name]) for name in ("train", "val", "test")}
@@ -276,7 +334,7 @@ class StudyRegistry:
                 raise RegistryError("study has no frozen selection; finish a sealed search before revealing")
 
     def bind_selection(self, study_id, selection):
-        text = _canonical(selection)
+        text = _record_json(selection, "Selection")
         with self._write() as connection:
             row = self._study(connection, study_id)
             if row["selection_json"] is not None and row["selection_json"] != text:
@@ -368,14 +426,14 @@ class StudyRegistry:
                     or (context["start_date"], context["end_date"]) != (study["test_start"], study["test_end"])
                 ):
                     raise RegistryError("test claim does not match the registered data and frozen selection")
-                cached = connection.execute(
-                    "SELECT * FROM observations WHERE study_id=? AND kind='registered_reveal' "
-                    "AND status='completed' ORDER BY id LIMIT 1",
-                    (study_id,),
-                ).fetchone()
+                cached = self._cached_reveal(connection, study_id, pin=True)
                 if cached:
-                    if cached["result_json"] is None or _hash(cached["result_json"]) != cached["result_sha256"]:
-                        raise RegistryError("cached reveal integrity check failed; will not silently re-evaluate")
+                    if any(
+                        cached[name] != context[name] for name in ("ticker", "start_date", "end_date", "data_snapshot")
+                    ):
+                        raise RegistryError("cached reveal does not match the registered test context")
+                    payload = json.loads(cached["result_json"])
+                    _record_json(payload, "Cached test summary")
                     count, _ = self._overlaps(connection, context["ticker"], context["start_date"], context["end_date"])
                     replay = self._insert(
                         connection,
@@ -389,7 +447,7 @@ class StudyRegistry:
                     )
                     return {
                         "cached": True,
-                        "payload": json.loads(cached["result_json"]),
+                        "payload": payload,
                         "access": {
                             **self._base(study_id),
                             "status": "previously_revealed",
@@ -433,12 +491,25 @@ class StudyRegistry:
         return {"cached": False, "payload": None, "access": access}
 
     def complete_test(self, event_id, payload):
-        text = _canonical(payload)
+        text = _record_json(payload, "Test summary")
         with self._write() as connection:
+            event = connection.execute("SELECT * FROM observations WHERE event_id=?", (event_id,)).fetchone()
+            if (
+                event is None
+                or event["status"] != "reserved"
+                or event["kind"] not in {"registered_reveal", "legacy_auto"}
+            ):
+                raise RegistryError("test reservation is missing or already finalized")
+            cache_key = event["dedupe_key"]
+            if event["study_id"]:
+                self._study(connection, event["study_id"])
+                cached = self._cached_reveal(connection, event["study_id"], pin=True)
+                if cached is None:
+                    cache_key = f"registered-reveal-cache:{event['study_id']}"
             changed = connection.execute(
-                "UPDATE observations SET status='completed',result_json=?,result_sha256=?,completed_at=? "
+                "UPDATE observations SET status='completed',result_json=?,result_sha256=?,completed_at=?,dedupe_key=? "
                 "WHERE event_id=? AND status='reserved' AND kind IN ('registered_reveal','legacy_auto')",
-                (text, _hash(text), _now(), event_id),
+                (text, _hash(text), _now(), cache_key, event_id),
             ).rowcount
             if changed != 1:
                 raise RegistryError("test reservation is missing or already finalized")
@@ -446,7 +517,8 @@ class StudyRegistry:
     def fail_test(self, event_id, error):
         with self._write() as connection:
             connection.execute(
-                "UPDATE observations SET status='failed',error=?,completed_at=? WHERE event_id=? AND status='reserved'",
+                "UPDATE observations SET status='failed',error=?,completed_at=? WHERE event_id=? "
+                "AND status='reserved' AND kind IN ('registered_reveal','legacy_auto')",
                 (str(error)[:2000], _now(), event_id),
             )
 
@@ -456,11 +528,7 @@ class StudyRegistry:
         with self._connect() as connection:
             row = self._study(connection, study_id)
             count, overlaps = self._overlaps(connection, row["ticker"], row["test_start"], row["test_end"])
-            revealed = connection.execute(
-                "SELECT event_id FROM observations WHERE study_id=? AND kind='registered_reveal' "
-                "AND status='completed' ORDER BY id LIMIT 1",
-                (study_id,),
-            ).fetchone()
+            revealed = self._cached_reveal(connection, study_id)
             return {
                 **self._base(study_id),
                 "status": "previously_revealed" if revealed else "known_prior_exposure" if count else "sealed",
@@ -471,7 +539,7 @@ class StudyRegistry:
                 "registered_at": row["registered_at"],
                 "selection_sha256": row["selection_sha256"],
                 "selected_at": row["selected_at"],
-                "event_id": revealed[0] if revealed else None,
+                "event_id": revealed["event_id"] if revealed else None,
                 "prior_overlap_count": count,
                 "prior_overlaps": overlaps,
             }

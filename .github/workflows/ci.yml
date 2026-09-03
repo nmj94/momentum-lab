@@ -21,8 +21,8 @@ jobs:
         with:
           python-version: "3.12"
           enable-cache: true
-      - run: uv sync --all-extras
-      - run: uv run ruff check .
+      - run: uv sync --locked --all-extras
+      - run: uv run --locked ruff check .
 
   test:
     runs-on: ubuntu-latest
@@ -36,17 +36,17 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
-      - run: uv sync --all-extras
+      - run: uv sync --locked --all-extras
       - name: Run tests with coverage (offline)
-        run: uv run coverage run --source=momentum_lab -m pytest -m "not network" -q
+        run: uv run --locked coverage run --source=momentum_lab -m pytest -m "not network" -q
       - name: Enforce coverage floor
-        run: uv run coverage report --fail-under=78
+        run: uv run --locked coverage report --fail-under=78
       - name: Compare frozen accounting benchmarks
-        run: uv run momentum-lab benchmark --output benchmark-results
+        run: uv run --locked momentum-lab benchmark --output benchmark-results
       - name: Compare independent frozen portfolio ledgers
-        run: uv run momentum-lab portfolio benchmark
+        run: uv run --locked momentum-lab portfolio benchmark
       - name: Compare independent membership and sealed-study ledgers
-        run: uv run momentum-lab portfolio study benchmark
+        run: uv run --locked momentum-lab portfolio study benchmark
       - name: Publish regression report
         if: always()
         uses: actions/upload-artifact@v4
@@ -69,7 +69,7 @@ jobs:
           uv venv .wheel-venv
           uv pip install --python .wheel-venv/bin/python dist/*.whl
           .wheel-venv/bin/momentum-lab --version
-          .wheel-venv/bin/python -c "import momentum_lab; assert momentum_lab.__version__ == '0.14.0'"
+          .wheel-venv/bin/python -c "import momentum_lab; assert momentum_lab.__version__ == '0.14.1'"
       - name: Verify packaged frozen fixtures outside the source checkout
         run: |
           wheel_python="$GITHUB_WORKSPACE/.wheel-venv/bin/python"
@@ -124,6 +124,6 @@ jobs:
         with:
           python-version: "3.12"
           enable-cache: true
-      - run: uv sync --all-extras
+      - run: uv sync --locked --all-extras
       - name: Run provider contract tests
-        run: uv run pytest -m network -q
+        run: uv run --locked pytest -m network -q

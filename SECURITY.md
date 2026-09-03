@@ -2,8 +2,14 @@
 
 ## Supported versions
 
-Security and data-integrity fixes are applied to the latest 0.5.x release line.
-Older checkpoints should be treated as research artifacts, not executable input.
+Security and data-integrity fixes are applied to the latest tagged or documented
+release on `master` (currently 0.14.1). Older versions are not maintained as
+separate security branches. Install from this repository; the PyPI name
+`momentum-lab` belongs to an unrelated project.
+
+Keep older source/version-locked research artifacts with their original
+environment. An upgrade requires a new run or protocol, not bypassing resume
+checks or deleting observation history. Never load untrusted checkpoints.
 
 ## Reporting a vulnerability
 

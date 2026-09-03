@@ -156,7 +156,7 @@ def test_download_data_sanitizes_cache_filename(tmp_path, monkeypatch):
 
     data_module.download_data("^GSPC", start="2024-01-02", end="2024-01-04")
 
-    assert (data_dir / "_GSPC_daily.csv").exists()
+    assert (data_dir / "%5EGSPC_daily.csv").exists()
 
 
 def _fake_yf_download(index, base=1.0):
@@ -1934,7 +1934,8 @@ def test_evaluate_zero_volatility():
     const = pd.Series([0.01] * 100)
     metrics = evaluate(const)
     assert metrics["sharpe"] == 0.0
-    assert metrics["cagr"] == 0.0
+    assert metrics["cagr"] == pytest.approx(round(1.01**252 - 1.0, 4))
+    assert metrics["total_return"] == pytest.approx(round(1.01**100 - 1.0, 4))
 
     flat = pd.Series([0.0] * 100)
     assert evaluate(flat)["sharpe"] == 0.0

@@ -4,15 +4,34 @@ All functions accept pandas Series indexed by date. The backtest engine
 uses previous-day positions to compute current-day returns (no look-ahead bias).
 """
 
+from numbers import Real
+
 import numpy as np
 import pandas as pd
 
 RISK_FREE_RATE: float = 0.0
 
 
+def _real_series(value, name, *, allow_missing=False, positive=False):
+    if not isinstance(value, pd.Series):
+        raise TypeError(f"{name} must be a pandas Series")
+    if (
+        not pd.api.types.is_numeric_dtype(value.dtype)
+        or pd.api.types.is_bool_dtype(value.dtype)
+        or pd.api.types.is_complex_dtype(value.dtype)
+    ):
+        raise ValueError(f"{name} must contain real numeric values")
+    values = value.to_numpy(dtype=float, na_value=np.nan)
+    valid = np.isfinite(values) | (np.isnan(values) if allow_missing else False)
+    if not valid.all() or (positive and (values <= 0).any()):
+        raise ValueError(f"{name} must be finite" + (" and positive" if positive else ""))
+    return value.astype(float)
+
+
 def _aligned_numeric_input(value, index, name, *, minimum=None, exclusive_minimum=None):
     """Return a scalar or dated schedule aligned without looking forward."""
     if isinstance(value, pd.Series):
+        value = _real_series(value, name)
         if not value.index.is_monotonic_increasing or not value.index.is_unique:
             raise ValueError(f"{name} schedule index must be sorted and unique")
         try:
@@ -162,7 +181,23 @@ def backtest(
         raise ValueError("max_participation must be in (0, 1]")
     if isinstance(execution_lag, bool) or not isinstance(execution_lag, (int, np.integer)) or execution_lag < 0:
         raise ValueError("execution_lag must be a non-negative integer")
+    if vol_target is not None:
+        if (
+            isinstance(vol_target, (bool, np.bool_))
+            or not isinstance(vol_target, Real)
+            or not np.isfinite(vol_target)
+            or vol_target < 0
+        ):
+            raise ValueError("vol_target must be finite and non-negative")
+        if (
+            isinstance(vol_lookback, (bool, np.bool_))
+            or not isinstance(vol_lookback, (int, np.integer))
+            or vol_lookback < 2
+        ):
+            raise ValueError("vol_lookback must be an integer of at least 2")
 
+    prices = _real_series(prices, "prices", positive=True)
+    positions = _real_series(positions, "positions", allow_missing=True)
     if prices.empty:
         empty = prices.astype(float).copy()
         return {
@@ -176,15 +211,19 @@ def backtest(
             "capacity_constrained": empty.astype(bool),
             "borrow_blocked": empty.astype(bool),
         }
-    if not np.isfinite(prices.to_numpy(dtype=float)).all() or (prices <= 0).any():
-        raise ValueError("prices must be finite and positive")
-    if not prices.index.is_monotonic_increasing or not prices.index.is_unique:
+    if (
+        isinstance(prices.index, pd.MultiIndex)
+        or prices.index.hasnans
+        or (not prices.index.is_monotonic_increasing or not prices.index.is_unique)
+    ):
         raise ValueError("prices index must be sorted and unique")
 
     positions = positions.reindex(prices.index).ffill().fillna(0)
     if not np.isfinite(positions.to_numpy(dtype=float)).all():
         raise ValueError("positions must be finite")
     returns = prices.pct_change().fillna(0)
+    if not np.isfinite(returns.to_numpy()).all():
+        raise ValueError("price returns exceed numerical range")
 
     if vol_target is not None:
         realized_vol = returns.rolling(vol_lookback).std() * np.sqrt(annualization)
@@ -277,6 +316,8 @@ def backtest(
         )
         borrow_cost = short_exposure * _period_rate(float(borrow_rates.iloc[i]), fraction)
         pre_trade_return = held * asset_return + cash_pnl + rebate_pnl - financing_cost - borrow_cost
+        if not np.isfinite(pre_trade_return):
+            raise ValueError("backtest return exceeds numerical range; review input scales and rates")
 
         # Normalize the marked-to-market asset leg by pre-trade NAV to obtain
         # its drifted portfolio weight.  If NAV is already gone, liquidate and
@@ -297,6 +338,8 @@ def backtest(
             requested_trades.iloc[i] = requested_turnover
             turnover = requested_turnover
             pre_trade_nav = nav * pre_trade_factor
+            if not np.isfinite(pre_trade_nav) or pre_trade_nav <= 0:
+                raise ValueError("backtest NAV exceeds numerical range")
 
             if liquidity_enabled and requested_turnover > 0.0:
                 dollar_volume = float(prices.iloc[i]) * float(volumes.iloc[i])
@@ -322,6 +365,8 @@ def backtest(
             execution_cost_bps = slippage_bps + float(spreads.iloc[i]) / 2.0 + impact_cost_bps
             execution_cost_dollars = turnover * pre_trade_nav * execution_cost_bps / 10000.0
             transaction_cost = (commission_dollars + execution_cost_dollars) / nav
+            if not np.isfinite(transaction_cost):
+                raise ValueError("backtest transaction costs exceed numerical range")
             transaction_costs.iloc[i] = transaction_cost
             period_return = pre_trade_return - transaction_cost
             if period_return <= -1.0:
@@ -331,9 +376,13 @@ def backtest(
         trades.iloc[i] = turnover
         strategy_returns.iloc[i] = period_return
         nav *= 1.0 + period_return
+        if not np.isfinite(nav) or (nav <= 0 and not insolvent):
+            raise ValueError("backtest NAV exceeds numerical range")
         previous_target = 0.0 if insolvent else filled_positions.iloc[i]
 
     equity = (1.0 + strategy_returns).cumprod().clip(lower=0.0)
+    if not np.isfinite(equity.to_numpy()).all():
+        raise ValueError("backtest equity exceeds numerical range")
 
     return {
         "returns": strategy_returns,
@@ -355,6 +404,11 @@ def evaluate(
 ) -> dict:
     """Compute comprehensive evaluation metrics.
 
+    Require finite real returns; missing observations are not silently removed.
+    Bankruptcy is absorbing. Constant and one-observation series retain their
+    actual performance; undefined Sharpe/Sortino and insufficient-sample moments
+    keep the legacy numeric zero sentinel. Search excludes undefined Sharpe.
+
     Args:
         returns: pd.Series of daily strategy returns.
         risk_free_rate: Annualized risk-free rate as a decimal.
@@ -364,10 +418,13 @@ def evaluate(
         dict of metrics: sharpe, sortino, calmar, max_drawdown, cagr,
         total_return, volatility, win_rate, profit_factor, skew, kurtosis.
     """
+    for name, value in (("annualization", annualization), ("risk_free_rate", risk_free_rate)):
+        if isinstance(value, (bool, np.bool_)) or not isinstance(value, Real) or not np.isfinite(value):
+            raise ValueError(f"{name} must be finite and numeric")
     if annualization <= 0:
         raise ValueError("annualization must be positive")
-    returns = returns.dropna()
-    if len(returns) < 2 or returns.std() < 1e-10:
+    returns = _real_series(returns, "returns").copy()
+    if returns.empty:
         return {
             k: 0.0
             for k in [
@@ -385,15 +442,25 @@ def evaluate(
             ]
         }
 
+    # The same absorbing-bankruptcy convention as backtest(). In particular,
+    # two losses below -100% must never multiply into a positive equity curve.
+    losses_at_or_below_nav = np.flatnonzero(returns.to_numpy() <= -1.0)
+    if len(losses_at_or_below_nav):
+        first_loss = losses_at_or_below_nav[0]
+        returns.iloc[first_loss] = -1.0
+        returns.iloc[first_loss + 1 :] = 0.0
+
     ann = annualization
     mean_ret = returns.mean()
-    std_ret = returns.std()
+    std_ret = returns.std() if len(returns) >= 2 else 0.0
     downside_std = returns[returns < 0].std()
     if pd.isna(downside_std):
         downside_std = 0.0
 
-    sharpe = (mean_ret * ann - risk_free_rate) / (std_ret * np.sqrt(ann) + 1e-10)
-    sortino = (mean_ret * ann - risk_free_rate) / (downside_std * np.sqrt(ann) + 1e-10)
+    # Keep legacy zero sentinels for undefined ratios, but never erase actual
+    # gain/loss, drawdown or CAGR merely because variance is zero or n == 1.
+    sharpe = (mean_ret * ann - risk_free_rate) / (std_ret * np.sqrt(ann) + 1e-10) if std_ret >= 1e-10 else 0.0
+    sortino = (mean_ret * ann - risk_free_rate) / (downside_std * np.sqrt(ann) + 1e-10) if std_ret >= 1e-10 else 0.0
 
     equity = (1 + returns).cumprod()
     # Anchor the peak at initial capital 1.0 so first-bar entry costs count as
@@ -420,7 +487,7 @@ def evaluate(
     losses = abs(returns[returns < 0].sum())
     profit_factor = gains / (losses + 1e-10)
 
-    return {
+    metrics = {
         "sharpe": round(sharpe, 4),
         "sortino": round(sortino, 4),
         "calmar": round(calmar, 4),
@@ -430,9 +497,12 @@ def evaluate(
         "volatility": round(std_ret * np.sqrt(ann), 4),
         "win_rate": round(win_rate, 4),
         "profit_factor": round(profit_factor, 4),
-        "skew": round(returns.skew(), 4),
-        "kurtosis": round(returns.kurtosis(), 4),
+        "skew": round(returns.skew(), 4) if len(returns) >= 3 and std_ret >= 1e-10 else 0.0,
+        "kurtosis": round(returns.kurtosis(), 4) if len(returns) >= 4 and std_ret >= 1e-10 else 0.0,
     }
+    if not all(np.isfinite(value) for value in metrics.values()):
+        raise ValueError("evaluation metrics exceed numerical range")
+    return metrics
 
 
 def evaluate_strategy(

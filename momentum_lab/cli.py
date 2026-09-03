@@ -1,11 +1,11 @@
 """cli.py - Command-line interface for momentum-lab."""
 
 import argparse
+import sqlite3
 import sys
 
 from . import __version__
-from .datasets import DatasetError
-from .governance import RegistryError
+from .data import MarketDataUnavailableError
 from .search import run_search
 from .strategies import STRATEGY_REGISTRY, list_strategies
 
@@ -13,7 +13,7 @@ from .strategies import STRATEGY_REGISTRY, list_strategies
 def _run_checked(parser, **kwargs):
     try:
         return run_search(**kwargs)
-    except (RegistryError, DatasetError) as exc:
+    except (ValueError, TypeError, OSError, sqlite3.DatabaseError, MarketDataUnavailableError) as exc:
         parser.error(str(exc))
 
 

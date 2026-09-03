@@ -63,7 +63,7 @@ def _val_sharpe(
         val_returns = full["returns"].loc[periods["val"][0] : periods["val"][1]]
         held = full["positions"].shift(1).fillna(0.0)
         val_held = held.loc[periods["val"][0] : periods["val"][1]]
-        if len(val_returns) == 0 or val_held.abs().sum() == 0:
+        if len(val_returns) < 2 or val_held.abs().sum() == 0 or val_returns.std() < 1e-10:
             return -99.0
         return evaluate(
             val_returns,
@@ -85,6 +85,7 @@ def robustness_check(
     min_neighbors=4,
     backtest_kwargs=None,
     risk_free_rate=RISK_FREE_RATE,
+    execution_price_column="close",
 ):
     """Run neighborhood perturbation and summarize stability.
 
@@ -92,7 +93,9 @@ def robustness_check(
       baseline, neighbors (list of float sharpe), stats, grade, flags.
     """
     strategy = get_strategy(sname)
-    prices = df["close"]
+    if execution_price_column not in {"open", "close"} or execution_price_column not in df:
+        raise ValueError("sensitivity requires the selected open/close execution price column")
+    prices = df[execution_price_column]
 
     base = _val_sharpe(strategy, data, prices, periods, params, cost_bps, backtest_kwargs, risk_free_rate)
     # Drop neighbors that violate the strategy's own coherence constraints

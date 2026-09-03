@@ -6,11 +6,14 @@ import re
 import time
 import warnings
 from pathlib import Path
+from urllib.parse import quote
 
 import numpy as np
 import pandas as pd
 import yfinance as yf
 from platformdirs import user_cache_dir
+
+from .artifacts import atomic_text_output
 
 # Cache outside the package directory so wheel installs never try to write into
 # site-packages.  The environment override remains useful for CI and containers.
@@ -23,7 +26,7 @@ CACHE_SCHEMA_VERSION = 1
 # ^GSPC, EURUSD=X).  Anything else (notably URL-significant characters such
 # as ``?``, ``&``, ``#`` or ``/``) is rejected before it reaches the request
 # URL built by yfinance.
-_TICKER_RE = re.compile(r"^[A-Za-z0-9._^=-]+$")
+_TICKER_RE = re.compile(r"[A-Za-z0-9._^=-]{1,64}")
 _CONTINUOUS_QUOTES = ("-USD", "-EUR", "-GBP", "-JPY", "-AUD", "-CAD", "-CHF", "-BTC", "-ETH")
 
 
@@ -43,7 +46,7 @@ def infer_annualization(ticker: str) -> float:
 
 def _load_cache(cache_path):
     try:
-        return pd.read_csv(cache_path, index_col=0, parse_dates=True)
+        return pd.read_csv(cache_path, index_col=0, parse_dates=True, float_precision="round_trip")
     except (OSError, ValueError) as e:
         # A corrupt or truncated cache file must not permanently brick every
         # future download; treat it as a cache miss and re-download.
@@ -115,36 +118,47 @@ def _load_cache_metadata(cache_path, ticker):
         return {}
     try:
         metadata = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, TypeError) as exc:
-        warnings.warn(f"Ignoring unreadable cache metadata {path}: {exc}", RuntimeWarning)
-        return {}
-    if (
-        not isinstance(metadata, dict)
-        or metadata.get("schema_version") != CACHE_SCHEMA_VERSION
-        or metadata.get("ticker") != ticker
-    ):
-        return {}
+        if (
+            not isinstance(metadata, dict)
+            or type(metadata.get("schema_version")) is not int
+            or metadata["schema_version"] != CACHE_SCHEMA_VERSION
+            or metadata.get("ticker") != ticker
+        ):
+            raise ValueError("schema or ticker identity mismatch")
+        for name in ("earliest_available", "latest_available", "requested_start"):
+            value = metadata.get(name)
+            if value is not None:
+                if not isinstance(value, str):
+                    raise ValueError(f"invalid {name}")
+                _daily_bound(value, name)
+    except (OSError, ValueError, TypeError, RecursionError) as exc:
+        warnings.warn(f"Ignoring invalid cache metadata {path}: {exc}", RuntimeWarning)
+        return None  # Invalid identity must invalidate prices too, not merely coverage hints.
     return metadata
 
 
 def _write_cache_atomic(df, cache_path):
     """Write a cache snapshot atomically so interruption cannot truncate it."""
-    tmp_path = cache_path.with_name(f".{cache_path.name}.{os.getpid()}.tmp")
-    try:
-        df.to_csv(tmp_path)
-        tmp_path.replace(cache_path)
-    finally:
-        tmp_path.unlink(missing_ok=True)
+    with atomic_text_output(cache_path, newline="") as handle:
+        df.to_csv(handle)
 
 
 def _write_cache_metadata_atomic(metadata, cache_path):
     path = _metadata_path(cache_path)
-    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    with atomic_text_output(path) as handle:
+        handle.write(json.dumps(metadata, ensure_ascii=False, indent=2, allow_nan=False))
+
+
+def _daily_bound(value, name):
     try:
-        tmp_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp_path.replace(path)
-    finally:
-        tmp_path.unlink(missing_ok=True)
+        if not isinstance(value, (str, pd.Timestamp)):
+            raise TypeError("expected a daily date")
+        bound = pd.Timestamp(value)
+        if pd.isna(bound) or bound.tzinfo is not None or bound != bound.normalize():
+            raise ValueError("expected a timezone-free daily date")
+    except (ValueError, TypeError, OverflowError) as exc:
+        raise ValueError(f"{name} must be a valid timezone-free daily date") from exc
+    return bound
 
 
 def _validate_ohlcv(df, ticker):
@@ -155,8 +169,12 @@ def _validate_ohlcv(df, ticker):
         raise ValueError(f"Download for '{ticker}' is missing required OHLC column(s): {', '.join(missing)}")
     if not isinstance(df.index, pd.DatetimeIndex):
         raise TypeError(f"Download for '{ticker}' does not have a DatetimeIndex.")
-    if not df.index.is_monotonic_increasing or not df.index.is_unique:
+    if df.index.hasnans or not df.index.is_monotonic_increasing or not df.index.is_unique:
         raise ValueError(f"Download for '{ticker}' has an unsorted or duplicate date index.")
+    if df.index.tz is not None or not df.index.equals(df.index.normalize()):
+        raise ValueError(f"Download for '{ticker}' requires timezone-free daily session dates.")
+    if not df.columns.is_unique:
+        raise ValueError(f"Download for '{ticker}' contains duplicate columns.")
     prices = df[["open", "high", "low", "close"]].to_numpy(dtype=float)
     if not np.isfinite(prices).all() or (prices <= 0).any():
         raise ValueError(f"Download for '{ticker}' contains non-finite or non-positive OHLC prices.")
@@ -164,6 +182,10 @@ def _validate_ohlcv(df, ticker):
         df["low"] > df[["open", "high", "close"]].min(axis=1)
     ).any():
         raise ValueError(f"Download for '{ticker}' contains inconsistent high/low prices.")
+    if "volume" in df:
+        volume = df["volume"].dropna().to_numpy(dtype=float)
+        if not np.isfinite(volume).all() or (volume < 0).any():
+            raise ValueError(f"Download for '{ticker}' contains non-finite or negative volume.")
 
 
 def download_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True):
@@ -183,18 +205,20 @@ def download_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True):
         MarketDataUnavailableError: If the provider fails after bounded retries
             and no range-complete cache exists.
     """
-    start_ts = pd.Timestamp(start)
-    end_ts = pd.Timestamp(end) if end is not None else None
+    start_ts = _daily_bound(start, "start")
+    end_ts = _daily_bound(end, "end") if end is not None else None
     if end_ts is not None and end_ts < start_ts:
         raise ValueError("end must be on or after start")
 
-    ticker = str(ticker)
-    if not _TICKER_RE.match(ticker):
+    if not isinstance(ticker, str) or not _TICKER_RE.fullmatch(ticker):
         raise ValueError(f"Invalid ticker {ticker!r}: only letters, digits and '.', '_', '^', '=', '-' are allowed.")
+    ticker = ticker.upper()
 
     continuous = is_continuously_traded(ticker)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    safe_ticker = "".join(char if char.isalnum() or char in "._-" else "_" for char in ticker)
+    # Encode underscore too: old lossy cache names used it for both '^' and
+    # '='. No ambiguous legacy filename is reused for ANY of those tickers.
+    safe_ticker = quote(ticker, safe=".-").replace("_", "%5F")
     cache_path = DATA_DIR / f"{safe_ticker}_daily.csv"
 
     cached = _load_cache(cache_path) if use_cache and cache_path.exists() else None
@@ -205,6 +229,8 @@ def download_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True):
             warnings.warn(f"Ignoring invalid cache file {cache_path}: {exc}", RuntimeWarning)
             cached = None
     cache_metadata = _load_cache_metadata(cache_path, ticker) if cached is not None else {}
+    if cache_metadata is None:
+        cached, cache_metadata = None, {}
     earliest_available = cache_metadata.get("earliest_available")
     if cached is not None and _cache_covers_range(
         cached,
@@ -261,6 +287,10 @@ def download_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True):
     keep = [c for c in ["open", "high", "low", "close", "volume"] if c in df.columns]
     df = df[keep].copy()
     df.index = pd.to_datetime(df.index)
+    if df.index.tz is not None:
+        # Yahoo daily labels use the exchange's local session date. Drop the
+        # timezone without converting to UTC (which could shift the date).
+        df.index = df.index.tz_localize(None)
     df = df.sort_index()
     df = df[~df.index.duplicated(keep="last")]
     # Only price columns are mandatory: volume is NaN for some indices and
