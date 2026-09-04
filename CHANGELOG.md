@@ -3,6 +3,38 @@
 All notable changes are documented here. The project follows semantic versioning
 for its public Python API and run/checkpoint schema.
 
+## [0.16.0] - 2026-09-04
+
+### Private run/registry recovery bundles
+
+- Add `create_backup`, `inspect_backup`, `restore_backup`, `BackupError` and
+  `momentum-lab backup create/inspect/restore`. Export and restore require explicit
+  acknowledgement of unencrypted sensitive contents, including the entire shared
+  registry rather than a history-filtered subset.
+- Acquire existing whole-run ownership without creating/resetting operational
+  state. Preserve completed, failed and interrupted attempts, full output files,
+  legacy backup sets and nested notes. Require original registry identity/config;
+  completed artifacts must match their existing completion receipt.
+- Snapshot SQLite databases using the online backup API, including committed
+  WAL contents, retaining all registry tables/cache links. Do not copy SQLite
+  sidecars as ordinary files, checkpoint sources or rebuild database schemas.
+- Add a versioned, bounded stored-ZIP format, per-file SHA-256/size receipts and
+  optional independently recorded archive SHA-256 verification. Reject traversal,
+  native filename collisions, links, orphan sidecars, duplicate/unlisted members,
+  malformed metadata, compressed/encrypted members and oversized directories.
+- Publish archives exclusively and restore only to new inactive directories after
+  private staging verification. Commit a completion marker last; interrupted
+  restore destinations are retained without a marker and never overwritten.
+- Add fault/concurrency/WAL/privacy regressions, Linux/macOS/Windows CI coverage
+  and installed-core CLI recovery checks for all three research workflows.
+
+Compatibility: backup schema 1 is separate; accounting, engine/checkpoint schema
+5, run-state schema 1, research registries, dependencies and all 24 frozen ledgers
+are unchanged. Old version-locked research still requires its original environment.
+Tracked v0.15 outputs can be archived without resuming; older untracked outputs
+are not retroactively certified. External data/software, portable protocol rebinding,
+registry merging and active in-place restore are not added. See [BACKUPS.md](BACKUPS.md).
+
 ## [0.15.0] - 2026-09-04
 
 ### Run ownership, score-free status and completion receipts

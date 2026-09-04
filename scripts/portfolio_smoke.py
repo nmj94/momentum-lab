@@ -10,6 +10,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from backup_smoke import verify_recovery
 
 import momentum_lab
 from momentum_lab import StudyRegistry
@@ -111,8 +112,9 @@ def main():
         assert receipt["status"] == "completed" and receipt["integrity"] == "verified"
         assert receipt["attempt"]["workflow"] == "portfolio"
         assert len(receipt["history"]) == 1 and "metrics" not in json.dumps(receipt)
+        verify_recovery(output, root / "backup", registry.path)
     print(
-        "Portfolio smoke: passed (core wheel, six frozen ledgers, offline CLI, delayed fills, cash/fees, audit, no overwrite)"
+        "Portfolio smoke: passed (core wheel, six frozen ledgers, offline CLI, delayed fills, cash/fees, audit, no overwrite, recovery bundle)"
     )
 
 

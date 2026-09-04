@@ -10,6 +10,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from backup_smoke import verify_recovery
 
 import momentum_lab
 from momentum_lab import PortfolioStudyRegistry, StudyRegistry
@@ -17,7 +18,7 @@ from momentum_lab import PortfolioStudyRegistry, StudyRegistry
 
 def main():
     assert "site-packages" in Path(momentum_lab.__file__).resolve().parts, "smoke must use the installed wheel"
-    assert momentum_lab.__version__ == "0.15.0"
+    assert momentum_lab.__version__ == "0.16.0"
     assert importlib.util.find_spec("sklearn") is None, "portfolio study core must not require optional ML"
     with tempfile.TemporaryDirectory(prefix="momentum-portfolio-study-smoke-") as folder:
         root = Path(folder)
@@ -170,8 +171,10 @@ def main():
             assert "metrics" not in json.dumps(receipt)
             if name == "replayed":
                 assert receipt["artifact_count"] == 4
+        for name in ("sealed", "revealed", "replayed"):
+            verify_recovery(root / "runs" / name, root / ("backup-" + name), registry.path)
     print(
-        "Portfolio study smoke: passed (core wheel, frozen cases, membership, sealed development, reveal, carried NAV, cached replay, reuse audit)"
+        "Portfolio study smoke: passed (core wheel, frozen cases, membership, sealed development, reveal, carried NAV, cached replay, reuse audit, recovery bundles)"
     )
 
 

@@ -2,6 +2,7 @@
 
 from ._version import __version__
 from .backtest import backtest, evaluate, evaluate_strategy
+from .backups import BackupError, create_backup, inspect_backup, restore_backup
 from .config import SearchConfig, load_search_config
 from .data import MarketDataUnavailableError, download_data, prepare_data
 from .datasets import DatasetError, import_dataset, load_dataset
@@ -26,6 +27,7 @@ from .universe import load_membership
 
 __all__ = [
     "STRATEGY_REGISTRY",
+    "BackupError",
     "DatasetError",
     "IndicatorDAG",
     "MarketDataUnavailableError",
@@ -43,12 +45,14 @@ __all__ = [
     "__version__",
     "backtest",
     "backtest_portfolio",
+    "create_backup",
     "cross_sectional_momentum",
     "download_data",
     "evaluate",
     "evaluate_strategy",
     "get_strategy",
     "import_dataset",
+    "inspect_backup",
     "inspect_run",
     "list_strategies",
     "load_dataset",
@@ -59,6 +63,7 @@ __all__ = [
     "prepare_data",
     "render_html_report",
     "render_markdown_report",
+    "restore_backup",
     "robustness_check",
     "run_portfolio",
     "run_portfolio_study",

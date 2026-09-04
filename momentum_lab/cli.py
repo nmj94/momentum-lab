@@ -18,6 +18,10 @@ def _run_checked(parser, **kwargs):
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "backup":
+        from .backups import main as backup_main
+
+        return backup_main(sys.argv[2:])
     if len(sys.argv) > 1 and sys.argv[1] == "runs":
         from .run_control import main as runs_main
 
@@ -49,7 +53,8 @@ def main():
         "  momentum-lab benchmark              # Offline frozen regression suite\n"
         "  momentum-lab portfolio --help       # Fixed-rule multi-asset research\n"
         "  momentum-lab portfolio study --help # Registered portfolio study\n"
-        "  momentum-lab runs status experiments/gld-dev --verify # Score-free run receipt\n",
+        "  momentum-lab runs status experiments/gld-dev --verify # Score-free run receipt\n"
+        "  momentum-lab backup --help          # Private, verified recovery bundles\n",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(

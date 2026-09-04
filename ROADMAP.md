@@ -187,11 +187,26 @@ Delivered in v0.15.0:
 
 This does not add automatic resume, whole-directory rollback, network-filesystem
 leases or trusted remote custody. Existing research exposure and reveal rules
-still apply. Next reliability work is a versioned, complete backup/export and
-restore contract covering run outputs, operational state and research registry
-identity together; no partial-copy "recovery" should reset observation history.
-The point-in-time data and accounting gates above still precede portfolio search
-or paper execution.
+still apply. The point-in-time data and accounting gates above still precede
+portfolio search or paper execution.
+
+## v0.16 — Private recovery bundles
+
+Delivered in v0.16.0:
+
+- Idle-run ownership, complete output/operational snapshots and entire shared
+  registry backups using SQLite's online API, retaining committed WAL contents.
+- Versioned bounded manifests, SHA-256 receipts, explicit sensitive-export
+  consent, score-free verification and exclusive archive publication.
+- Verified staging and new-directory inactive restoration; no automatic registry
+  rollback, history filtering, protocol rebinding or result recomputation.
+- Fault, hostile-archive, concurrency, stale-history and cross-platform tests;
+  installed-core recovery checks across all three research workflows.
+
+Remaining recovery work: independently held archive digests/signatures, encrypted
+storage, licensed input snapshots and compatible source/environment capsules.
+Active migration needs a separately designed monotonic history-merge protocol;
+an older registry with the same UUID must never replace newer observations.
 
 ## v1.0 — Stable research platform
 

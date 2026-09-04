@@ -11,6 +11,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from backup_smoke import verify_recovery
 
 import momentum_lab
 from momentum_lab import DatasetError, StudyRegistry, load_dataset
@@ -108,6 +109,7 @@ def main():
         assert receipt["status"] == "completed" and receipt["integrity"] == "verified"
         assert [attempt["mode"] for attempt in receipt["history"]] == ["reveal", "reveal", "new"]
         assert "test_metrics" not in json.dumps(receipt)
+        verify_recovery(summary_path.parent, root / "backup", environment["MOMENTUM_LAB_REGISTRY_PATH"])
         prices = root / "relocated" / "prices.csv"
         prices.write_bytes(prices.read_bytes() + b"\n")
         try:
@@ -116,7 +118,9 @@ def main():
             assert "SHA-256 mismatch" in str(exc)
         else:
             raise AssertionError("Changed CSV must fail checksum validation")
-    print("Offline dataset smoke: passed (import, inspect, parallel search, seal, relocate, reveal, replay, tamper)")
+    print(
+        "Offline dataset smoke: passed (import, inspect, parallel search, seal, relocate, reveal, replay, tamper, recovery bundle)"
+    )
 
 
 if __name__ == "__main__":

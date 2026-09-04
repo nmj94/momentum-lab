@@ -48,6 +48,19 @@ momentum-lab SPY --all-strategies --exhaustive --workers 8
 
 未来发布使用的 distribution name 为 `momentum-research-lab`；Python import 和命令行名称仍为 `momentum_lab` 与 `momentum-lab`。
 
+## v0.16 — 私密备份与隔离恢复
+
+将空闲实验的全部输出、运行状态，以及**完整共享研究登记库**一起备份，保留既往访问、失败记录和已固定的揭示结果。数据库通过 SQLite 一致性快照复制，包含 WAL 中已提交的数据；恢复前核验文件清单及哈希，并只写入新目录。
+
+```bash
+# 备份未经加密，可能含其他实验的揭示结果；请私密保存，不要提交公开仓库。
+momentum-lab backup create experiments/gld-dev --output gld-dev.mlbackup.zip --acknowledge-sensitive
+momentum-lab backup inspect gld-dev.mlbackup.zip
+momentum-lab backup restore gld-dev.mlbackup.zip --output recovery/gld-dev --acknowledge-sensitive
+```
+
+导出与恢复都需要本次命令显式确认，不覆盖旧文件、不替换当前登记库、不重置访问历史，也不自动重跑。**外部行情和原软件环境不在包内**，不能将其视为可一键续跑的完整环境。请另行保存返回的归档 SHA-256，并用 `--expected-sha256` 核对；完整范围、限制和恢复步骤见 [BACKUPS.md](BACKUPS.md)。
+
 ## v0.15 — 运行保护与恢复状态
 
 单资产搜索、全历史组合研究和组合封存研究现在都会对输出目录持有覆盖整次运行的本地操作系统锁；其他进程不能同时向同一目录写入。失败与中断保留记录，完成后登记发布文件的大小和 SHA-256。

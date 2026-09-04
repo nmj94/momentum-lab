@@ -57,6 +57,27 @@ momentum-lab SPY --all-strategies --exhaustive --workers 8
 The future PyPI distribution name is `momentum-research-lab`; the Python import
 and CLI remain `momentum_lab` and `momentum-lab`.
 
+## v0.16 — Private recovery bundles
+
+Back up an idle tracked run together with its operational state and **entire
+shared research registry**, including prior observations and cached reveals.
+SQLite snapshots retain committed WAL transactions; file receipts and a portable,
+bounded manifest are verified before an inactive copy is restored to a new folder.
+
+```bash
+# Sensitive, unencrypted export: keep it private, not in a public repository.
+momentum-lab backup create experiments/gld-dev --output gld-dev.mlbackup.zip --acknowledge-sensitive
+momentum-lab backup inspect gld-dev.mlbackup.zip
+momentum-lab backup restore gld-dev.mlbackup.zip --output recovery/gld-dev --acknowledge-sensitive
+```
+
+Creation/restore require invocation-only acknowledgement. Neither command
+overwrites existing destinations, replaces current registry history, rebinds old
+protocols nor runs research. External datasets and the original software
+environment are **not included**; this is not a one-command resume capsule.
+Record the returned archive SHA-256 separately and pass `--expected-sha256` when
+verifying/restoring. See [BACKUPS.md](BACKUPS.md) for scope, limits and recovery.
+
 ## v0.15 — Run ownership and recovery visibility
 
 Single-asset searches, exploratory portfolios and registered portfolio studies

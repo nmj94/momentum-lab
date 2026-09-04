@@ -33,6 +33,8 @@ datasets/
 
 # Experiment results
 .momentum-runs/
+*.mlbackup.zip
+recovery/
 experiments/
 output/
 results/

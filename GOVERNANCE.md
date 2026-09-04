@@ -174,6 +174,12 @@ separate state journal, interrupted-owner detection and explicit recovery rules.
 
 ## Cross-run observation matching
 
+For a private copy of a tracked run plus **all** shared registry history, v0.16
+adds [recovery bundles](BACKUPS.md). Export/restore require explicit sensitive-data
+acknowledgement. Restoration is inactive: it never replaces the current registry
+with an older snapshot. Registry UUID equality does not mean histories are equally
+current, and there is no automatic history merge or restore-to-live command.
+
 The shared SQLite registry lives in the OS user-data directory for
 `momentum-lab`, not in an individual experiment or in `site-packages`.
 `run_config.json` records its resolved path and identity. Precedence is:

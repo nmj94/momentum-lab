@@ -132,9 +132,12 @@ Do not replace an ownership inode while any process may still hold it. Missing
 ownership beside existing state fails closed; it is not automatically recreated.
 
 Moving only outputs loses their operational association; moving control journals
-to new absolute paths is not an automatic identity migration. Keep originals or
-restore the complete set at its original location. A versioned portable backup/
-restore command is future work, not a guarantee of this release.
+to new absolute paths is not an automatic identity migration. Since v0.16,
+[private recovery bundles](BACKUPS.md) retain outputs, operational state and the
+complete shared registry, with verified restoration to a **new inactive** folder.
+They do not rewrite the original paths or create an ownership file, activate a
+restored registry, merge newer observations or resume research. External data and
+the compatible software environment must still be preserved separately.
 
 ## Compatibility and platform limits
 
