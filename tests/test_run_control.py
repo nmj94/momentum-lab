@@ -364,7 +364,13 @@ def test_untrusted_manifest_cannot_escape_the_output_directory(target, name):
         inspect_run(target, verify=True)
 
 
-@pytest.mark.parametrize("value", ["null", "[]", "{}", "x" * 65537, '[{"path":"x","bytes":true,"sha256":"a"}]'])
+@pytest.mark.parametrize(
+    "value",
+    ["null", "[]", "{}", "x" * 65537, '[{"path":"x","bytes":true,"sha256":"a"}]'],
+    # Pytest also writes node IDs into PYTEST_CURRENT_TEST. Keep the oversized
+    # payload out of that ID so Windows can run the actual size-limit assertion.
+    ids=["null", "empty-list", "object", "oversized", "invalid-fields"],
+)
 def test_malformed_manifests_fail_closed(target, value):
     session = _completed(target)
     with sqlite3.connect(session.path) as connection:

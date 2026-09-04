@@ -395,7 +395,8 @@ def test_relocated_datasets_change_paths_not_research_contract(config, tmp_path)
 
 
 def test_html_markdown_escape_untrusted_labels_and_show_limits(config):
-    config.run_id = "<img src=x onerror=alert(1)>"
+    # Exercise published reports with a name that exists on every platform.
+    config.run_id = "report & note"
     change_manifest(config, source='<script>alert("source")</script>|note')
     result = run_portfolio(config, acknowledge_history=True)
     output = Path(result["result_dir"])
@@ -403,9 +404,16 @@ def test_html_markdown_escape_untrusted_labels_and_show_limits(config):
         text = (output / name).read_text()
         assert "<img src=x" not in text and "<script>" not in text
         assert "&lt;script&gt;" in text
+        assert "report &amp; note" in text
         assert "point-in-time" in text and "not a sealed test" in text
         assert "ACT/365.25" in text
     assert "\\|note" in (output / "report.md").read_text()
+    # Angle brackets cannot be Windows directory names, but they remain valid
+    # untrusted renderer inputs. Do not skip their escaping checks on Windows.
+    untrusted = {**result, "run_id": "<img src=x onerror=alert(1)>"}
+    for render in (pr.render_portfolio_markdown, pr.render_portfolio_html):
+        text = render(untrusted, metadata(config))
+        assert "<img src=x" not in text and "&lt;img src=x" in text
 
 
 def test_all_cash_report_and_metrics_remain_well_defined(config):
