@@ -104,6 +104,10 @@ def main():
         assert "test_metrics" not in json.dumps(
             StudyRegistry(environment["MOMENTUM_LAB_REGISTRY_PATH"], create=False).history()
         )
+        receipt = json.loads(invoke("runs", "history", summary_path.parent, "--verify"))
+        assert receipt["status"] == "completed" and receipt["integrity"] == "verified"
+        assert [attempt["mode"] for attempt in receipt["history"]] == ["reveal", "reveal", "new"]
+        assert "test_metrics" not in json.dumps(receipt)
         prices = root / "relocated" / "prices.csv"
         prices.write_bytes(prices.read_bytes() + b"\n")
         try:

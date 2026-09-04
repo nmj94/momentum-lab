@@ -30,6 +30,7 @@ from .portfolio_research import (
     _summarize_books,
     _validate_config,
 )
+from .run_control import RunSession, RunStateError
 from .search import _git_revision, _write_frame_atomic, _write_text_atomic
 from .universe import daily_date
 
@@ -102,9 +103,12 @@ def _test_books(books, anchor):
 
 
 def _phase_files(output, phase, books, start=None):
+    names = []
     for name, frame in _book_exports(books).items():
         visible = frame.loc[start:] if start is not None else frame
         _write_frame_atomic(visible.reset_index(), output / f"{phase}_{name}")
+        names.append(f"{phase}_{name}")
+    return names
 
 
 def _visible_phase(summary):
@@ -177,112 +181,123 @@ def run_portfolio_study(config, *, reveal_test=False, allow_test_reuse=False, te
     protocol = {**contract, "kind": "fixed_rule_portfolio_v1", "assets": snapshots, "periods": periods}
     run_id = config.run_id or f"portfolio_study_{uuid4().hex[:16]}"
     output = Path(config.result_dir).resolve() / run_id
-    if output.exists():
-        raise PortfolioError("Portfolio output already exists; use a new run_id (no overwrite or implicit resume)")
-    if reveal_test:
-        registry.require_protocol(config.study_id, protocol)
-    else:
-        registry.register(config.study_id, protocol)
-    recipe = config.to_dict()
-    recipe.update(
-        datasets={ticker.upper(): str(Path(path).resolve()) for ticker, path in config.datasets.items()},
-        result_dir=str(Path(config.result_dir).resolve()),
-        registry_path=str(registry.path),
-        run_id=run_id,
-    )
-    first_source = next(iter(provenance.values()))
-    metadata = {
-        **contract,
-        "config": recipe,
-        "run_id": run_id,
-        "study_id": config.study_id,
-        "created_at": _now(),
-        "git_sha": _git_revision(),
-        "contract_sha256": _hash(_canonical(protocol)),
-        "registry_id": registry.registry_id,
-        "registry_path": str(registry.path),
-        "periods": periods,
-        "annualization": first_source["annualization"],
-        "currency": first_source["currency"],
-    }
-    output.mkdir(parents=True, exist_ok=False)
-    _write_text_atomic(output / "run_config.json", json.dumps(metadata, ensure_ascii=False, indent=2, allow_nan=False))
-    numeric_recipe = _evaluation_recipe(config)
-    test, original_output = None, None
-    if not reveal_test:
-        registry.record_portfolio_development(config.study_id, run_id, output)
-        development_prices = prices.iloc[:split].copy(deep=True)
-        development_mask = None if eligibility is None else eligibility.iloc[:split].copy(deep=True)
-        books = _compute_books(numeric_recipe, development_prices, development_mask)
-        development = _summarize_books(numeric_recipe, development_prices, books, metadata)
-        development.update(
-            research_status="registered_fixed_rule_development",
-            history_acknowledged=False,
-            history_notice="Registered fixed-rule development only; test hidden. " + AUDIT_WARNING,
-            performance_scope="development only; test hidden",
-            evaluated_at=_now(),
-        )
-        _phase_files(output, "development", books)
-        registry.complete_development(config.study_id, {"recipe": contract["recipe"]}, development)
-        access = registry.status(config.study_id)
-        artifact_scope = "development_ledgers_only"
-    else:
-        development = registry.development_payload(config.study_id)
-        claim = registry.claim_test(
-            config.study_id, run_id, output, allow_reuse=allow_test_reuse, reason=test_reuse_reason
-        )
-        access = claim["access"]
-        if claim["cached"]:
-            test = claim["payload"]["test"]
-            original_output = claim["payload"]["original_test_output"]
-            artifact_scope = "cached_summary_only"
+    with RunSession(output, "portfolio_study", mode="reveal" if reveal_test else "development") as execution:
+        if output.exists():
+            raise PortfolioError("Portfolio output already exists; use a new run_id (no overwrite or implicit resume)")
+        execution.start()
+        execution.stage("research")
+        if reveal_test:
+            registry.require_protocol(config.study_id, protocol)
         else:
-            try:
-                books = _compute_books(
-                    numeric_recipe, prices.copy(deep=True), None if eligibility is None else eligibility.copy(deep=True)
-                )
-                anchor = prices.index[split - 1]
-                test_books = _test_books(books, anchor)
-                test = _summarize_books(numeric_recipe, prices.iloc[split:], test_books, metadata)
-                test.update(
-                    research_status="registered_fixed_rule_test",
-                    history_acknowledged=False,
-                    history_notice="Registered fixed-rule test; explicitly revealed. " + AUDIT_WARNING,
-                    performance_scope="revealed test",
-                    warmup_bars=0,
-                    anchor_date=str(anchor.date()),
-                    evaluated_at=_now(),
-                )
-                for metric_key, account in (("metrics", "result"), ("benchmark_metrics", "benchmark")):
-                    test[metric_key]["starting_nav"] = float(test_books[account]["ledger"]["nav"].iloc[0])
-                _phase_files(output, "test", test_books, start=anchor)
-                original_output = str(output)
-                registry.complete_test(access["batch_id"], {"test": test, "original_test_output": original_output})
-            except Exception as exc:
-                registry.fail_test(access["batch_id"], exc)
-                raise
-            access = {**access, "test_results_visible": True}
-            artifact_scope = "test_ledgers"
-    summary = {
-        "run_id": run_id,
-        "study_id": config.study_id,
-        "status": "completed",
-        "research_status": "registered_fixed_rule_portfolio",
-        "periods": periods,
-        "contract_sha256": metadata["contract_sha256"],
-        "test_access": access,
-        "development": development,
-        "test": test,
-        "boundary_policy": BOUNDARY_POLICY,
-        "original_test_output": original_output,
-        "artifact_scope": artifact_scope,
-        "reports": {"markdown": "report.md", "html": "report.html"},
-    }
-    # A failure after cache commit is recoverable through an explicit cached replay.
-    _write_text_atomic(output / "report.md", render_portfolio_study_markdown(summary, metadata))
-    _write_text_atomic(output / "report.html", render_portfolio_study_html(summary, metadata))
-    _write_text_atomic(output / "summary.json", json.dumps(summary, ensure_ascii=False, indent=2, allow_nan=False))
-    return {**summary, "result_dir": str(output)}
+            registry.register(config.study_id, protocol)
+        recipe = config.to_dict()
+        recipe.update(
+            datasets={ticker.upper(): str(Path(path).resolve()) for ticker, path in config.datasets.items()},
+            result_dir=str(Path(config.result_dir).resolve()),
+            registry_path=str(registry.path),
+            run_id=run_id,
+        )
+        first_source = next(iter(provenance.values()))
+        metadata = {
+            **contract,
+            "config": recipe,
+            "run_id": run_id,
+            "study_id": config.study_id,
+            "created_at": _now(),
+            "git_sha": _git_revision(),
+            "contract_sha256": _hash(_canonical(protocol)),
+            "registry_id": registry.registry_id,
+            "registry_path": str(registry.path),
+            "periods": periods,
+            "annualization": first_source["annualization"],
+            "currency": first_source["currency"],
+        }
+        output.mkdir(parents=True, exist_ok=False)
+        _write_text_atomic(
+            output / "run_config.json", json.dumps(metadata, ensure_ascii=False, indent=2, allow_nan=False)
+        )
+        numeric_recipe = _evaluation_recipe(config)
+        test, original_output = None, None
+        artifact_names = []
+        if not reveal_test:
+            registry.record_portfolio_development(config.study_id, run_id, output)
+            development_prices = prices.iloc[:split].copy(deep=True)
+            development_mask = None if eligibility is None else eligibility.iloc[:split].copy(deep=True)
+            books = _compute_books(numeric_recipe, development_prices, development_mask)
+            development = _summarize_books(numeric_recipe, development_prices, books, metadata)
+            development.update(
+                research_status="registered_fixed_rule_development",
+                history_acknowledged=False,
+                history_notice="Registered fixed-rule development only; test hidden. " + AUDIT_WARNING,
+                performance_scope="development only; test hidden",
+                evaluated_at=_now(),
+            )
+            artifact_names = _phase_files(output, "development", books)
+            registry.complete_development(config.study_id, {"recipe": contract["recipe"]}, development)
+            access = registry.status(config.study_id)
+            artifact_scope = "development_ledgers_only"
+        else:
+            development = registry.development_payload(config.study_id)
+            execution.stage("test_evaluation")
+            claim = registry.claim_test(
+                config.study_id, run_id, output, allow_reuse=allow_test_reuse, reason=test_reuse_reason
+            )
+            access = claim["access"]
+            if claim["cached"]:
+                test = claim["payload"]["test"]
+                original_output = claim["payload"]["original_test_output"]
+                artifact_scope = "cached_summary_only"
+            else:
+                try:
+                    books = _compute_books(
+                        numeric_recipe,
+                        prices.copy(deep=True),
+                        None if eligibility is None else eligibility.copy(deep=True),
+                    )
+                    anchor = prices.index[split - 1]
+                    test_books = _test_books(books, anchor)
+                    test = _summarize_books(numeric_recipe, prices.iloc[split:], test_books, metadata)
+                    test.update(
+                        research_status="registered_fixed_rule_test",
+                        history_acknowledged=False,
+                        history_notice="Registered fixed-rule test; explicitly revealed. " + AUDIT_WARNING,
+                        performance_scope="revealed test",
+                        warmup_bars=0,
+                        anchor_date=str(anchor.date()),
+                        evaluated_at=_now(),
+                    )
+                    for metric_key, account in (("metrics", "result"), ("benchmark_metrics", "benchmark")):
+                        test[metric_key]["starting_nav"] = float(test_books[account]["ledger"]["nav"].iloc[0])
+                    artifact_names = _phase_files(output, "test", test_books, start=anchor)
+                    original_output = str(output)
+                    registry.complete_test(access["batch_id"], {"test": test, "original_test_output": original_output})
+                except Exception as exc:
+                    registry.fail_test(access["batch_id"], exc)
+                    raise
+                access = {**access, "test_results_visible": True}
+                artifact_scope = "test_ledgers"
+        summary = {
+            "run_id": run_id,
+            "study_id": config.study_id,
+            "status": "completed",
+            "research_status": "registered_fixed_rule_portfolio",
+            "periods": periods,
+            "contract_sha256": metadata["contract_sha256"],
+            "test_access": access,
+            "development": development,
+            "test": test,
+            "boundary_policy": BOUNDARY_POLICY,
+            "original_test_output": original_output,
+            "artifact_scope": artifact_scope,
+            "reports": {"markdown": "report.md", "html": "report.html"},
+        }
+        execution.stage("publishing")
+        # A failure after cache commit is recoverable through an explicit cached replay.
+        _write_text_atomic(output / "report.md", render_portfolio_study_markdown(summary, metadata))
+        _write_text_atomic(output / "report.html", render_portfolio_study_html(summary, metadata))
+        _write_text_atomic(output / "summary.json", json.dumps(summary, ensure_ascii=False, indent=2, allow_nan=False))
+        execution.complete(["run_config.json", "summary.json", "report.md", "report.html", *artifact_names])
+        return {**summary, "result_dir": str(output)}
 
 
 def main(argv=None):
@@ -339,7 +354,7 @@ def main(argv=None):
             allow_test_reuse=args.allow_test_reuse,
             test_reuse_reason=args.test_reuse_reason,
         )
-    except (PortfolioError, RegistryError, DatasetError, OSError, sqlite3.DatabaseError) as exc:
+    except (PortfolioError, RegistryError, DatasetError, RunStateError, OSError, sqlite3.DatabaseError) as exc:
         parser.error(str(exc))
     print(f"Portfolio study completed: {result['study_id']} / {result['run_id']}")
     print(f"Test access: {result['test_access']['status']}; visible: {result['test_access']['test_results_visible']}")

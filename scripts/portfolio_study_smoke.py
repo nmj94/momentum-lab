@@ -17,7 +17,7 @@ from momentum_lab import PortfolioStudyRegistry, StudyRegistry
 
 def main():
     assert "site-packages" in Path(momentum_lab.__file__).resolve().parts, "smoke must use the installed wheel"
-    assert momentum_lab.__version__ == "0.14.1"
+    assert momentum_lab.__version__ == "0.15.0"
     assert importlib.util.find_spec("sklearn") is None, "portfolio study core must not require optional ML"
     with tempfile.TemporaryDirectory(prefix="momentum-portfolio-study-smoke-") as folder:
         root = Path(folder)
@@ -163,6 +163,13 @@ def main():
         )
         assert summary("acknowledged")["test_access"]["status"] == "repeated_use"
         assert len(registry.history()) == 10
+        for name in ("sealed", "revealed", "replayed", "second-development", "acknowledged"):
+            receipt = json.loads(invoke("runs", "status", root / "runs" / name, "--verify"))
+            assert receipt["status"] == "completed" and receipt["integrity"] == "verified"
+            assert receipt["attempt"]["workflow"] == "portfolio_study"
+            assert "metrics" not in json.dumps(receipt)
+            if name == "replayed":
+                assert receipt["artifact_count"] == 4
     print(
         "Portfolio study smoke: passed (core wheel, frozen cases, membership, sealed development, reveal, carried NAV, cached replay, reuse audit)"
     )

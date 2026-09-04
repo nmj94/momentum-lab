@@ -32,6 +32,7 @@ datasets/
 !tests/fixtures/*.csv
 
 # Experiment results
+.momentum-runs/
 experiments/
 output/
 results/

@@ -158,9 +158,19 @@ winner under the current run's filename. Registered runs still require an empty
 directory or a valid resume; they cannot be overwritten this way.
 
 Publication is atomic **per file**, with exclusively created staging files, not
-a transaction over an entire run directory. Do not run multiple coordinators
-against the same run ID. Keep the complete backup set with its original source,
-data, environment and registry; do not combine artifacts from different runs.
+a transaction over an entire run directory. Since v0.15, cooperating search and
+portfolio coordinators hold a local OS lock across output validation, research
+and publication; a second owner of the same directory fails busy. Older versions
+and low-level APIs do not participate. Never delete the stable ownership file to
+force a retry. Keep the complete backup set with its original source, data,
+environment and registry; do not combine artifacts from different runs.
+
+`momentum-lab runs status PATH` and `runs history PATH` inspect score-free
+operational attempts, separately from research observation history. `--verify`
+checks published file snapshots; it neither reveals nor recomputes a test. A
+failed run may already have durably reserved test access, and an intact completion
+receipt does not establish that data was unseen. See [RUNS.md](RUNS.md) for the
+separate state journal, interrupted-owner detection and explicit recovery rules.
 
 ## Cross-run observation matching
 

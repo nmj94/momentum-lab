@@ -55,6 +55,22 @@ jobs:
           path: benchmark-results/
           if-no-files-found: warn
 
+  run-control-platforms:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync --locked --all-extras
+      - name: Verify native ownership, interruption and workflow integration
+        run: uv run --locked pytest tests/test_run_control.py tests/test_portfolio_research.py tests/test_portfolio_study.py -q
+
   package:
     runs-on: ubuntu-latest
     steps:
@@ -69,7 +85,7 @@ jobs:
           uv venv .wheel-venv
           uv pip install --python .wheel-venv/bin/python dist/*.whl
           .wheel-venv/bin/momentum-lab --version
-          .wheel-venv/bin/python -c "import momentum_lab; assert momentum_lab.__version__ == '0.14.1'"
+          .wheel-venv/bin/python -c "import momentum_lab; assert momentum_lab.__version__ == '0.15.0'"
       - name: Verify packaged frozen fixtures outside the source checkout
         run: |
           wheel_python="$GITHUB_WORKSPACE/.wheel-venv/bin/python"
@@ -114,6 +130,12 @@ jobs:
           study_workspace="$(mktemp -d)"
           cd "$study_workspace"
           "$wheel_python" "$GITHUB_WORKSPACE/scripts/portfolio_study_smoke.py"
+      - name: Verify installed run status, ownership and interrupted history
+        run: |
+          wheel_python="$GITHUB_WORKSPACE/.wheel-venv/bin/python"
+          run_workspace="$(mktemp -d)"
+          cd "$run_workspace"
+          "$wheel_python" "$GITHUB_WORKSPACE/scripts/run_control_smoke.py"
 
   network-test:
     if: github.event_name == 'schedule'

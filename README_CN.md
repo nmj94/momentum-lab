@@ -48,6 +48,19 @@ momentum-lab SPY --all-strategies --exhaustive --workers 8
 
 未来发布使用的 distribution name 为 `momentum-research-lab`；Python import 和命令行名称仍为 `momentum_lab` 与 `momentum-lab`。
 
+## v0.15 — 运行保护与恢复状态
+
+单资产搜索、全历史组合研究和组合封存研究现在都会对输出目录持有覆盖整次运行的本地操作系统锁；其他进程不能同时向同一目录写入。失败与中断保留记录，完成后登记发布文件的大小和 SHA-256。
+
+```bash
+# 只检查运行状态，不展示收益、不恢复搜索、不重新计算测试。
+momentum-lab runs status experiments/gld-dev
+momentum-lab runs history experiments/gld-dev --limit 10
+momentum-lab runs status experiments/gld-dev --verify
+```
+
+默认只读取状态元数据；显式 `--verify` 才读取最近一次完成时记录的文件并核对哈希，不展示文件内容。状态、恢复、备份与文件系统限制见 [RUNS.md](RUNS.md)。这不是整目录事务、分布式租约或防篡改签名；研究访问历史与显式揭示／重复使用确认保持不变。升级后请新建实验／协议，旧实验继续使用原有源码与环境。
+
 ## v0.14.1 完整性修复
 
 修复特殊资产代码的缓存串用、CSV 浮点精度漂移、恒定收益与破产统计错误、下一开盘成交的敏感性分析口径不一致、缺失来源配置仍可续跑、重跑备份不完整，以及单资产揭示结果缓存顺序错误。补充严格参数／配置校验和独立临时文件的原子写入，CI 强制使用已提交的依赖锁；原有 24 组冻结核算基准保持不变。
@@ -426,7 +439,7 @@ uv run ruff check .
 uv run pytest -m "not network" -q
 ```
 
-当前 CI 覆盖 Python 3.10—3.13，并在全新环境构建、安装 wheel，执行覆盖率门槛及每周数据源契约测试。自动发布仍在路线图中。
+当前 CI 在 Linux 覆盖 Python 3.10—3.13，在 macOS／Windows 检查运行锁及研究流程集成，并在全新环境构建、安装 wheel，执行覆盖率门槛及每周数据源契约测试。自动发布仍在路线图中。
 
 ## 许可证
 

@@ -3,6 +3,37 @@
 All notable changes are documented here. The project follows semantic versioning
 for its public Python API and run/checkpoint schema.
 
+## [0.15.0] - 2026-09-04
+
+### Run ownership, score-free status and completion receipts
+
+- Add non-blocking, whole-coordinator local OS ownership for single-asset
+  search, exploratory portfolios and registered portfolio studies. Preserve a
+  stable lock file, resolve native filesystem path aliases, reject linked control
+  files and close inherited POSIX descriptors without unlocking the parent.
+- Store attempts in a separate, failure-atomically initialized SQLite journal.
+  Record stages, completion/failure/interruption and exception class only; keep
+  research access records and cached results in their existing registries.
+- Add public `inspect_run`, `RunBusyError`, `RunStateError` and score-free
+  `momentum-lab runs status/history` commands. Detect abandoned running attempts
+  through OS lock availability, not PID reuse, timeouts or destructive unlocks.
+- Publish completion receipts after exports, with bounded filename manifests,
+  file sizes and streaming SHA-256 checks. Explicit `--verify` reports missing or
+  changed files without parsing scores or changing historical completion.
+- Preserve rejected-preflight history and distinguish crash detection time from
+  an unknown finish time. Recovery guidance retains exposure history, original
+  resume contracts and explicit reveal/reuse consent; no automatic retry is added.
+- Add real process-death, fork/thread contention, corruption, path-alias,
+  read-only and three-workflow regressions; macOS/Windows CI and installed
+  core-wheel ownership/status checks complement the Linux Python matrix.
+
+Compatibility: run-state schema 1 is new and separate. Engine/checkpoint schema
+5, research registry and portfolio schemas, dependencies and all 24 frozen
+accounting references are unchanged. Old outputs remain untracked until a valid
+new-version invocation; source/version-locked research still needs its original
+environment. Upgrade with new runs/protocols. Local ownership is not distributed
+locking, a directory transaction or tamper-proof custody. See [RUNS.md](RUNS.md).
+
 ## [0.14.1] - 2026-09-03
 
 ### Bug and research-integrity audit

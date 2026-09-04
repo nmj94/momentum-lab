@@ -35,6 +35,7 @@ from .governance import StudyRegistry, validate_study_options
 from .indicators import IndicatorDAG
 from .reporting import render_html_report, render_markdown_report
 from .robustness import robustness_check
+from .run_control import RunSession
 from .strategies import CLASSIC_STRATEGIES, STRATEGY_REGISTRY, get_strategy
 from .uncertainty import BOOTSTRAP_METHOD, BOOTSTRAP_WARNING, paired_block_bootstrap, validate_bootstrap_options
 
@@ -1626,809 +1627,854 @@ def run_search(
         raise ValueError("run_id must be a single directory name")
     run_id = run_id or f"{safe_ticker}_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{uuid4().hex[:8]}"
     run_dir = base_result_dir / run_id
-    previous_config_path = run_dir / "run_config.json"
-    if study_id and not resume and run_dir.exists() and any(run_dir.iterdir()):
-        raise ValueError("registered runs require a new empty run directory or resume=True")
-    if resume and not previous_config_path.is_file():
-        raise ValueError("resume requires its original run_config.json and registry")
-    if previous_config_path.is_file():
-        previous_config = json.loads(previous_config_path.read_text(encoding="utf-8"))
-        if not isinstance(previous_config, dict):
-            raise ValueError("previous run_config.json must contain an object")
-        if previous_config.get("study_id") and previous_config["study_id"] != study_id:
-            raise ValueError("cannot change or disable study_id in an existing registered run")
-    registry = StudyRegistry(registry_path, create=not resume and not reveal_test)
-    if resume and previous_config_path.is_file() and previous_config.get("registry_id") != registry.registry_id:
-        raise ValueError("resume registry identity mismatch; restore the original access history")
-    if reveal_test:
-        registry.require_reveal_ready(study_id)
-    test_access = registry.unregistered_status()
-    run_dir.mkdir(parents=True, exist_ok=True)
+    with RunSession(run_dir, "search", mode="reveal" if reveal_test else "resume" if resume else "new") as execution:
+        previous_config_path = run_dir / "run_config.json"
+        if study_id and not resume and run_dir.exists() and any(run_dir.iterdir()):
+            raise ValueError("registered runs require a new empty run directory or resume=True")
+        if resume and not previous_config_path.is_file():
+            raise ValueError("resume requires its original run_config.json and registry")
+        if previous_config_path.is_file():
+            previous_config = json.loads(previous_config_path.read_text(encoding="utf-8"))
+            if not isinstance(previous_config, dict):
+                raise ValueError("previous run_config.json must contain an object")
+            if previous_config.get("study_id") and previous_config["study_id"] != study_id:
+                raise ValueError("cannot change or disable study_id in an existing registered run")
+        registry = StudyRegistry(registry_path, create=not resume and not reveal_test)
+        if resume and previous_config_path.is_file() and previous_config.get("registry_id") != registry.registry_id:
+            raise ValueError("resume registry identity mismatch; restore the original access history")
+        if reveal_test:
+            registry.require_reveal_ready(study_id)
+        test_access = registry.unregistered_status()
+        run_dir.mkdir(parents=True, exist_ok=True)
+        execution.start()
+        execution.stage("loading_data")
 
-    backtest_config = {
-        "annualization": annualization,
-        "financing_rate": financing_rate,
-        "financing_spread": financing_spread,
-        "borrow_bps": borrow_bps,
-        "slippage_bps": slippage_bps,
-        "cash_rate": cash_rate,
-        "short_rebate_rate": short_rebate_rate,
-        "spread_bps": spread_bps,
-        "impact_bps": impact_bps,
-        "impact_exponent": impact_exponent,
-        "impact_reference_participation": impact_reference_participation,
-        "max_participation": max_participation,
-        "initial_capital": initial_capital,
-        "min_fee": min_fee,
-        "max_leverage": max_leverage,
-        "execution_lag": resolved_execution_lag,
-    }
-    backtest_kwargs = dict(backtest_config)
-    print(f"momentum-lab: Comparing strategies for {ticker}")
-
-    dataset_options = {"dataset": dataset} if dataset is not None else {}
-    data, df = prepare_data(
-        ticker, start=start, end=end, use_cache=use_cache, annualization=annualization, **dataset_options
-    )
-    data_provenance = data.get("data_provenance")
-    # Full-snapshot coverage/hash declarations belong to the coordinator's audit
-    # metadata, not to candidate workers with development-only observations.
-    data = {key: value for key, value in data.items() if key != "data_provenance"}
-    if execution_price_column not in df.columns:
-        raise ValueError(f"execution model {execution_model} requires the '{execution_price_column}' price column")
-    if impact_bps > 0 or max_participation is not None:
-        if "volume" not in df.columns:
-            raise ValueError("liquidity-aware execution requires a 'volume' column")
-        backtest_kwargs["volume"] = df["volume"]
-    n = len(df)
-    periods = _split_periods(df.index)
-    # Candidate workers receive neither test boundaries nor test observations.
-    # The coordinator releases the full snapshot only after validation selects
-    # one copied candidate.
-    selection_periods = {name: periods[name] for name in ("train", "val")}
-    development_end = periods["val"][1]
-    development_data = _slice_temporal_mapping(data, development_end)
-    development_df = df.loc[:development_end]
-    development_backtest_kwargs = _slice_temporal_mapping(backtest_kwargs, development_end)
-    validation_index = development_df.loc[periods["val"][0] : periods["val"][1]].index
-    halving_resources = (
-        _halving_resource_bars(validation_index, halving_stages, halving_factor, min_validation_bars)
-        if search_method == "successive_halving"
-        else []
-    )
-    if strategies is None:
-        # Safe default: a small quick run over non-ML strategies. ML remains
-        # available when requested explicitly but no longer turns a one-line
-        # command into days of model fitting and heavy optional dependencies.
-        strategies = list(CLASSIC_STRATEGIES)
-    elif isinstance(strategies, str):
-        strategies = [name.strip() for name in strategies.split(",") if name.strip()]
-    else:
-        strategies = list(strategies)
-
-    environment = _environment_manifest()
-    project_root = Path(__file__).resolve().parent.parent
-    metadata = {
-        "run_id": run_id,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "ticker": ticker,
-        "strategies": strategies,
-        "cost_bps": cost_bps,
-        **backtest_config,
-        "execution_model": execution_model,
-        "execution_price_column": execution_price_column,
-        "risk_free_rate": risk_free_rate,
-        "validation_folds": int(validation_folds),
-        "min_validation_bars": int(min_validation_bars),
-        "min_validation_trades": int(min_validation_trades),
-        "min_validation_exposure": float(min_validation_exposure),
-        "workers": workers,
-        "quick": quick,
-        "search_method": search_method,
-        "candidate_budget": int(candidate_budget),
-        "halving_factor": int(halving_factor),
-        "halving_stages": int(halving_stages),
-        "indicator_cache_size": int(indicator_cache_size),
-        "bootstrap": bool(bootstrap),
-        "bootstrap_resamples": int(bootstrap_resamples),
-        "bootstrap_block_length": int(bootstrap_block_length),
-        "bootstrap_confidence": float(bootstrap_confidence),
-        "bootstrap_seed": int(bootstrap_seed),
-        "bootstrap_min_observations": int(bootstrap_min_observations),
-        "study_id": study_id,
-        "registry_path": str(registry.path),
-        "registry_id": registry.registry_id,
-        "reveal_test": reveal_test,
-        "allow_test_reuse": allow_test_reuse,
-        "test_reuse_reason": test_reuse_reason,
-        "halving_resource_bars": halving_resources,
-        "top_n": top_n,
-        "start": start,
-        "end": end,
-        "data_start": str(df.index[0]),
-        "data_end": str(df.index[-1]),
-        "n_bars": n,
-        "git_sha": _git_revision(),
-        "source_fingerprint": _source_fingerprint(),
-        "lock_fingerprint": _file_fingerprint(project_root / "uv.lock"),
-        "environment": environment,
-        "environment_fingerprint": _environment_fingerprint(environment),
-        "package_version": __version__,
-        "engine_schema_version": ENGINE_SCHEMA_VERSION,
-        "data_snapshot": _data_snapshot(df),
-        "data_provenance": data_provenance,
-        "dataset": str(Path(dataset).resolve()) if dataset is not None else None,
-        "periods": {name: [str(bounds[0]), str(bounds[1])] for name, bounds in periods.items()},
-        "robust": robust,
-        "robust_frac": robust_frac,
-        "use_cache": use_cache,
-        "keep_all_results": keep_all_results,
-        "generate_report": generate_report,
-        "resume": resume,
-    }
-    if resume:
-        _check_resume_compatibility(run_dir, metadata)
-    if study_id:
-        unknown = [name for name in strategies if name not in STRATEGY_REGISTRY]
-        if unknown:
-            raise ValueError(f"registered study contains unknown strategies: {', '.join(unknown)}")
-        protocol = {
-            key: metadata[key]
-            for key in _RESUME_COMPAT_FIELDS
-            if key not in {"study_id", "registry_path", "registry_id"}
+        backtest_config = {
+            "annualization": annualization,
+            "financing_rate": financing_rate,
+            "financing_spread": financing_spread,
+            "borrow_bps": borrow_bps,
+            "slippage_bps": slippage_bps,
+            "cash_rate": cash_rate,
+            "short_rebate_rate": short_rebate_rate,
+            "spread_bps": spread_bps,
+            "impact_bps": impact_bps,
+            "impact_exponent": impact_exponent,
+            "impact_reference_participation": impact_reference_participation,
+            "max_participation": max_participation,
+            "initial_capital": initial_capital,
+            "min_fee": min_fee,
+            "max_leverage": max_leverage,
+            "execution_lag": resolved_execution_lag,
         }
-        protocol.update(
-            {
-                "periods": metadata["periods"],
-                "selection_rule": "deflated_sharpe_probability_v1",
-                "split_rule": "ordered_40_40_20_v1",
-                "strategy_space": {
-                    name: _jsonable(
-                        {"grid": get_strategy(name).param_grid, "universal": get_strategy(name).UNIVERSAL_PARAMS}
-                    )
-                    for name in strategies
-                },
-            }
+        backtest_kwargs = dict(backtest_config)
+        print(f"momentum-lab: Comparing strategies for {ticker}")
+
+        dataset_options = {"dataset": dataset} if dataset is not None else {}
+        data, df = prepare_data(
+            ticker, start=start, end=end, use_cache=use_cache, annualization=annualization, **dataset_options
         )
-        test_access = registry.register(study_id, _jsonable(protocol))
-        metadata["study_protocol_sha256"] = test_access["protocol_sha256"]
-    if not resume:
-        _archive_run_artifacts(run_dir)
-    _write_text_atomic(
-        run_dir / "run_config.json", json.dumps(_jsonable(metadata), ensure_ascii=False, indent=2, allow_nan=False)
-    )
-    print(f"  Data: {df.index[0].date()} ~ {df.index[-1].date()}, {n} bars")
-    print(f"  Train: {periods['train'][0].date()} ~ {periods['train'][1].date()}")
-    print(f"  Val:   {periods['val'][0].date()} ~ {periods['val'][1].date()}")
-    test_policy = "EXPLICIT REVEAL REQUIRED" if study_id else "LEGACY AUTO-REVEAL; PRIOR HISTORY UNKNOWN"
-    print(f"  Test:  {periods['test'][0].date()} ~ {periods['test'][1].date()} [{test_policy}]")
-
-    known = [s for s in strategies if s in STRATEGY_REGISTRY]
-    _check_strategy_dependencies(known)
-    registry.record_development(
-        ticker=ticker,
-        start=periods["train"][0],
-        end=periods["val"][1],
-        data_snapshot=metadata["data_snapshot"],
-        run_id=run_id,
-        run_path=run_dir,
-        study_id=study_id,
-    )
-    for s in strategies:
-        if s not in STRATEGY_REGISTRY:
-            print(f"  WARNING: Unknown strategy '{s}' skipped. Use --list to see available names.")
-    counts = {s: get_strategy(s).count_param_combinations() for s in known}
-    if search_method == "successive_halving":
-        total = sum(min(candidate_budget, count_params) for count_params in counts.values())
-        resources_text = " -> ".join(str(value) for value in halving_resources)
-        print(
-            f"  Strategies: {len(known)} (of {len(strategies)} requested), "
-            f"Initial candidates: {total}, Validation bars: {resources_text}"
+        data_provenance = data.get("data_provenance")
+        # Full-snapshot coverage/hash declarations belong to the coordinator's audit
+        # metadata, not to candidate workers with development-only observations.
+        data = {key: value for key, value in data.items() if key != "data_provenance"}
+        if execution_price_column not in df.columns:
+            raise ValueError(f"execution model {execution_model} requires the '{execution_price_column}' price column")
+        if impact_bps > 0 or max_participation is not None:
+            if "volume" not in df.columns:
+                raise ValueError("liquidity-aware execution requires a 'volume' column")
+            backtest_kwargs["volume"] = df["volume"]
+        n = len(df)
+        periods = _split_periods(df.index)
+        # Candidate workers receive neither test boundaries nor test observations.
+        # The coordinator releases the full snapshot only after validation selects
+        # one copied candidate.
+        selection_periods = {name: periods[name] for name in ("train", "val")}
+        development_end = periods["val"][1]
+        development_data = _slice_temporal_mapping(data, development_end)
+        development_df = df.loc[:development_end]
+        development_backtest_kwargs = _slice_temporal_mapping(backtest_kwargs, development_end)
+        validation_index = development_df.loc[periods["val"][0] : periods["val"][1]].index
+        halving_resources = (
+            _halving_resource_bars(validation_index, halving_stages, halving_factor, min_validation_bars)
+            if search_method == "successive_halving"
+            else []
         )
-    else:
-        total = sum(min(5, count_params) if quick else count_params for count_params in counts.values())
-        print(f"  Strategies: {len(known)} (of {len(strategies)} requested), Total experiments: {total}")
+        if strategies is None:
+            # Safe default: a small quick run over non-ML strategies. ML remains
+            # available when requested explicitly but no longer turns a one-line
+            # command into days of model fitting and heavy optional dependencies.
+            strategies = list(CLASSIC_STRATEGIES)
+        elif isinstance(strategies, str):
+            strategies = [name.strip() for name in strategies.split(",") if name.strip()]
+        else:
+            strategies = list(strategies)
 
-    all_results = []
-    n_results = 0
-    n_skipped = 0
-    n_errors = 0
-    t0 = time.time()
-    all_csv = run_dir / "all_results.csv"
-    stage_csv = run_dir / "search_stages.csv"
-    store_path = run_dir / "results.sqlite3"
-    if resume:
-        if not store_path.exists() and all_csv.exists():
-            _migrate_csv_checkpoint(all_csv, store_path)
-        n_skipped, n_errors = _store_counts(store_path)
-        n_results = n_skipped
-        if keep_all_results and search_method == "grid":
-            all_results.extend(_iter_result_store(store_path))
-        if n_skipped:
-            print(f"  Resume: found {n_skipped} committed experiments in {store_path}")
-    else:
-        # Create the schema before work starts. SQLite transactions are the
-        # canonical crash-safe checkpoint; CSV is an atomic exported view.
-        with closing(_open_result_store(store_path)):
-            pass
-
-    use_workers = workers > 1 and len(known) > 0
-    cache_totals = {"hits": 0, "misses": 0, "evictions": 0, "observed_evaluations": 0}
-    n_stage_evaluations = 0
-    n_stage_skipped = 0
-    halving_stage_rows = []
-    halving_diagnostics = None
-
-    def _observe_cache(result):
-        stats = result.get("indicator_cache") or {}
-        if stats:
-            cache_totals["observed_evaluations"] += 1
-            for key in ("hits", "misses", "evictions"):
-                cache_totals[key] += int(stats.get(key, 0))
-
-    def _make_pool(worker_data, worker_df, worker_periods, worker_backtest_kwargs):
-        if not use_workers:
-            return None
-        import multiprocessing as mp
-
-        return mp.get_context("spawn").Pool(
-            workers,
-            initializer=_init_worker,
-            initargs=(
-                worker_data,
-                worker_df,
-                worker_periods,
-                cost_bps,
-                risk_free_rate,
-                validation_folds,
-                execution_price_column,
-                worker_backtest_kwargs,
-                indicator_cache_size,
-            ),
-        )
-
-    if search_method == "grid":
-        pool = _make_pool(development_data, development_df, selection_periods, development_backtest_kwargs)
-        batch = []
-        position_cache = OrderedDict()
-        indicator_cache = IndicatorDAG(development_data, max_entries=indicator_cache_size)
-
-        def _flush_batch():
-            if batch:
-                _store_results(batch, store_path)
-                batch.clear()
-
-        def _handle(result):
-            nonlocal n_errors, n_results
-            n_results += 1
-            if result.get("error"):
-                n_errors += 1
-            _observe_cache(result)
-            if keep_all_results:
-                all_results.append(result)
-            batch.append(result)
-            if len(batch) >= 10_000:
-                _flush_batch()
-
-        search_ok = False
-        try:
-            for sname in strategies:
-                if sname not in STRATEGY_REGISTRY:
-                    continue
-                strategy = get_strategy(sname)
-                if quick:
-                    combos = _quick_sample(strategy, 5)
-                    n_combos = len(combos)
-                else:
-                    # Iterate lazily: large grids contain hundreds of thousands
-                    # of combinations and must not be materialized as a list.
-                    combos = strategy.iter_param_combinations()
-                    n_combos = strategy.count_param_combinations()
-                if resume:
-                    completed_for_strategy = _completed_params(store_path, sname)
-                    n_combos = max(0, n_combos - len(completed_for_strategy))
-                    combos = (params for params in combos if _canonical_params(params) not in completed_for_strategy)
-                cat = (
-                    "ML"
-                    if sname.startswith("ml_")
-                    else ("combo" if sname in ["ensemble", "stacked", "regime_aware"] else "classic")
-                )
-                print(f"\n  [{cat}] {sname} ({n_combos} params) ...")
-
-                if pool is not None:
-                    job = pool.imap_unordered(_worker_run, ((sname, params) for params in combos), chunksize=16)
-                    for result in tqdm(job, desc=f"  {sname}", total=n_combos, leave=True):
-                        _handle(result)
-                else:
-                    for params in tqdm(combos, desc=f"  {sname}", total=n_combos, leave=True):
-                        result = run_single_experiment(
-                            sname,
-                            params,
-                            development_data,
-                            development_df,
-                            selection_periods,
-                            cost_bps,
-                            risk_free_rate,
-                            validation_folds=validation_folds,
-                            execution_price_column=execution_price_column,
-                            position_cache=position_cache,
-                            indicator_cache=indicator_cache,
-                            **development_backtest_kwargs,
-                        )
-                        _handle(result)
-
-                _flush_batch()
-                print(f"  [checkpoint] {sname} done, {n_results} total")
-            search_ok = True
-        finally:
-            # Persist whatever was completed before an interruption so --resume
-            # can pick up even when a strategy does not reach its checkpoint.
-            _flush_batch()
-            if pool is not None:
-                if search_ok:
-                    pool.close()
-                else:
-                    pool.terminate()
-                pool.join()
-            if store_path.exists():
-                _export_result_store(store_path, all_csv)
-    else:
-        survivors = {sname: _quick_sample(get_strategy(sname), min(candidate_budget, counts[sname])) for sname in known}
-        initial_candidates = sum(len(values) for values in survivors.values())
-        staged_search_ok = False
-        try:
-            for stage, resource_bars in enumerate(halving_resources):
-                cutoff = validation_index[resource_bars - 1]
-                stage_data = _slice_temporal_mapping(development_data, cutoff)
-                stage_df = development_df.loc[:cutoff]
-                stage_periods = {
-                    "train": selection_periods["train"],
-                    "val": (selection_periods["val"][0], cutoff),
-                }
-                stage_backtest_kwargs = _slice_temporal_mapping(development_backtest_kwargs, cutoff)
-                stage_pool = _make_pool(stage_data, stage_df, stage_periods, stage_backtest_kwargs)
-                stage_position_cache = OrderedDict()
-                stage_indicator_cache = IndicatorDAG(stage_data, max_entries=indicator_cache_size)
-                final_stage = stage == len(halving_resources) - 1
-                stage_batch = []
-                stage_ok = False
-                stage_summary = {
-                    "stage": stage + 1,
-                    "resource_bars": resource_bars,
-                    "validation_end": str(cutoff),
-                    "input_candidates": 0,
-                    "advanced_candidates": 0,
-                    "new_evaluations": 0,
-                    "resumed_evaluations": 0,
-                    "errors": 0,
-                    "strategies": [],
-                }
-
-                def _flush_stage_batch(items=stage_batch, promote=final_stage):
-                    if items:
-                        _store_stage_results(items, store_path, final=promote)
-                        items.clear()
-
-                try:
-                    print(
-                        f"\n  [halving {stage + 1}/{len(halving_resources)}] "
-                        f"{resource_bars} validation bars through {cutoff.date()}"
-                    )
-                    for sname in known:
-                        candidates = survivors[sname]
-                        stage_summary["input_candidates"] += len(candidates)
-                        restored = _load_stage_results(store_path, sname, stage, resource_bars) if resume else {}
-                        results_by_params = {
-                            _canonical_params(params): restored[_canonical_params(params)]
-                            for params in candidates
-                            if _canonical_params(params) in restored
-                        }
-                        missing = [params for params in candidates if _canonical_params(params) not in restored]
-                        resumed_count = len(candidates) - len(missing)
-                        n_stage_skipped += resumed_count
-                        stage_summary["resumed_evaluations"] += resumed_count
-                        stage_summary["errors"] += sum(
-                            bool(result.get("error")) for result in results_by_params.values()
-                        )
-                        print(f"    {sname}: {len(candidates)} candidates ({len(missing)} to run)")
-
-                        if stage_pool is not None:
-                            job = stage_pool.imap_unordered(
-                                _worker_run,
-                                ((sname, params) for params in missing),
-                                chunksize=16,
-                            )
-                            iterator = tqdm(job, desc=f"    {sname}", total=len(missing), leave=True)
-                            for result in iterator:
-                                canonical = _canonical_params(result["params"])
-                                results_by_params[canonical] = result
-                                stage_batch.append((sname, result["params"], stage, resource_bars, result))
-                                n_stage_evaluations += 1
-                                stage_summary["new_evaluations"] += 1
-                                stage_summary["errors"] += int(bool(result.get("error")))
-                                _observe_cache(result)
-                                if len(stage_batch) >= 512:
-                                    _flush_stage_batch()
-                        else:
-                            for params in tqdm(missing, desc=f"    {sname}", total=len(missing), leave=True):
-                                result = run_single_experiment(
-                                    sname,
-                                    params,
-                                    stage_data,
-                                    stage_df,
-                                    stage_periods,
-                                    cost_bps,
-                                    risk_free_rate,
-                                    validation_folds=validation_folds,
-                                    execution_price_column=execution_price_column,
-                                    position_cache=stage_position_cache,
-                                    indicator_cache=stage_indicator_cache,
-                                    **stage_backtest_kwargs,
-                                )
-                                canonical = _canonical_params(params)
-                                results_by_params[canonical] = result
-                                stage_batch.append((sname, params, stage, resource_bars, result))
-                                n_stage_evaluations += 1
-                                stage_summary["new_evaluations"] += 1
-                                stage_summary["errors"] += int(bool(result.get("error")))
-                                _observe_cache(result)
-                                if len(stage_batch) >= 512:
-                                    _flush_stage_batch()
-
-                        _flush_stage_batch()
-                        if final_stage:
-                            # Also repairs a manually damaged canonical table
-                            # from the complete, validation-only stage journal.
-                            promoted = [results_by_params[_canonical_params(params)] for params in candidates]
-                            _store_results(promoted, store_path)
-                            next_candidates = candidates
-                        else:
-                            next_candidates = _stage_survivors(candidates, results_by_params, halving_factor)
-                        _mark_stage_survivors(store_path, sname, stage, next_candidates)
-                        survivors[sname] = next_candidates
-                        stage_summary["advanced_candidates"] += len(next_candidates)
-                        best_stage_score = max(
-                            (_stage_score(results_by_params[_canonical_params(params)]) for params in candidates),
-                            default=None,
-                        )
-                        stage_summary["strategies"].append(
-                            {
-                                "strategy": sname,
-                                "input_candidates": len(candidates),
-                                "advanced_candidates": len(next_candidates),
-                                "best_stage_sharpe": (
-                                    best_stage_score
-                                    if best_stage_score is not None and np.isfinite(best_stage_score)
-                                    else None
-                                ),
-                            }
-                        )
-                    stage_ok = True
-                finally:
-                    _flush_stage_batch()
-                    if stage_pool is not None:
-                        if stage_ok:
-                            stage_pool.close()
-                        else:
-                            stage_pool.terminate()
-                        stage_pool.join()
-                    _export_stage_store(store_path, stage_csv)
-                    _export_result_store(store_path, all_csv)
-                halving_stage_rows.append(stage_summary)
-            staged_search_ok = True
-        finally:
-            if store_path.exists():
-                _export_stage_store(store_path, stage_csv)
-                _export_result_store(store_path, all_csv)
-
-        if staged_search_ok:
-            n_results, n_errors = _store_counts(store_path)
-            if keep_all_results:
-                all_results = list(_iter_result_store(store_path))
-        halving_diagnostics = {
-            "method": "successive_halving",
-            "initial_candidates": initial_candidates,
-            "resource_bars": halving_resources,
-            "stages": halving_stage_rows,
-            "new_stage_evaluations": n_stage_evaluations,
-            "resumed_stage_evaluations": n_stage_skipped,
-            "total_stage_evaluations": n_stage_evaluations + n_stage_skipped,
-            "final_candidates": n_results,
-            "eliminated_candidates": max(0, initial_candidates - n_results),
-        }
-
-    elapsed = time.time() - t0
-    if halving_diagnostics is None:
-        halving_diagnostics = {
-            "method": "grid",
-            "candidate_evaluations": n_results,
-            "resumed_candidates": n_skipped,
-        }
-    cache_requests = cache_totals["hits"] + cache_totals["misses"]
-    cache_diagnostics = {
-        "max_entries_per_process": int(indicator_cache_size),
-        **cache_totals,
-        "hit_rate": cache_totals["hits"] / cache_requests if cache_requests else 0.0,
-    }
-    print(f"\n  Search complete! {n_results} results ({n_errors} errors) in {elapsed / 60:.1f} min")
-
-    if n_results == 0:
-        print("  WARNING: No experiments completed. Check strategy names and data.")
-        test_access["status"] = "no_selection"
-        return {
-            "all_results": [],
-            "top_results": [],
-            "best": None,
-            "robustness": None,
+        environment = _environment_manifest()
+        project_root = Path(__file__).resolve().parent.parent
+        metadata = {
             "run_id": run_id,
-            "result_dir": str(run_dir),
-            "n_results": 0,
-            "n_skipped": n_skipped,
-            "n_errors": n_errors,
-            "benchmark_metrics": None,
-            "bootstrap_diagnostics": bootstrap_diagnostics,
-            "test_access": test_access,
-            "parameter_sensitivity": None,
-            "search_diagnostics": halving_diagnostics,
-            "indicator_cache": cache_diagnostics,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "ticker": ticker,
+            "strategies": strategies,
+            "cost_bps": cost_bps,
+            **backtest_config,
+            "execution_model": execution_model,
+            "execution_price_column": execution_price_column,
+            "risk_free_rate": risk_free_rate,
+            "validation_folds": int(validation_folds),
+            "min_validation_bars": int(min_validation_bars),
+            "min_validation_trades": int(min_validation_trades),
+            "min_validation_exposure": float(min_validation_exposure),
+            "workers": workers,
+            "quick": quick,
+            "search_method": search_method,
+            "candidate_budget": int(candidate_budget),
+            "halving_factor": int(halving_factor),
+            "halving_stages": int(halving_stages),
+            "indicator_cache_size": int(indicator_cache_size),
+            "bootstrap": bool(bootstrap),
+            "bootstrap_resamples": int(bootstrap_resamples),
+            "bootstrap_block_length": int(bootstrap_block_length),
+            "bootstrap_confidence": float(bootstrap_confidence),
+            "bootstrap_seed": int(bootstrap_seed),
+            "bootstrap_min_observations": int(bootstrap_min_observations),
+            "study_id": study_id,
+            "registry_path": str(registry.path),
+            "registry_id": registry.registry_id,
+            "reveal_test": reveal_test,
+            "allow_test_reuse": allow_test_reuse,
+            "test_reuse_reason": test_reuse_reason,
+            "halving_resource_bars": halving_resources,
+            "top_n": top_n,
+            "start": start,
+            "end": end,
+            "data_start": str(df.index[0]),
+            "data_end": str(df.index[-1]),
+            "n_bars": n,
+            "git_sha": _git_revision(),
+            "source_fingerprint": _source_fingerprint(),
+            "lock_fingerprint": _file_fingerprint(project_root / "uv.lock"),
+            "environment": environment,
+            "environment_fingerprint": _environment_fingerprint(environment),
+            "package_version": __version__,
+            "engine_schema_version": ENGINE_SCHEMA_VERSION,
+            "data_snapshot": _data_snapshot(df),
+            "data_provenance": data_provenance,
+            "dataset": str(Path(dataset).resolve()) if dataset is not None else None,
+            "periods": {name: [str(bounds[0]), str(bounds[1])] for name, bounds in periods.items()},
+            "robust": robust,
+            "robust_frac": robust_frac,
+            "use_cache": use_cache,
+            "keep_all_results": keep_all_results,
+            "generate_report": generate_report,
+            "resume": resume,
         }
-
-    # Phase 2: apply minimum-evidence constraints and rank by Deflated
-    # Sharpe probability.  The second store scan keeps exhaustive runs
-    # bounded in memory while accounting for the number of trials.
-    top, selection_diagnostics = _select_from_store(
-        store_path,
-        top_n,
-        annualization,
-        min_validation_bars,
-        min_validation_trades,
-        min_validation_exposure,
-        validation_folds,
-        trial_count_override=(
-            halving_diagnostics.get("total_stage_evaluations") if search_method == "successive_halving" else None
-        ),
-        sharpe_std_override=(_stage_score_dispersion(store_path) if search_method == "successive_halving" else None),
-    )
-    if not keep_all_results:
-        all_results = []
-
-    # Phase 3: Freeze selection, then either remain sealed or reserve a reveal.
-    benchmark_metrics = None
-    if top:
-        # Copy the selected candidate so neither the checkpoint nor the
-        # validation-ranked top list is mutated with test-set information.
-        best = copy.deepcopy(top[0])
-        sname = best["strategy"]
-        params = best.get("params", {})
+        if resume:
+            _check_resume_compatibility(run_dir, metadata)
         if study_id:
-            registry.bind_selection(
-                study_id,
-                _jsonable(
-                    {
-                        "strategy": sname,
-                        "params": params,
-                        "val_metrics": best["val_metrics"],
-                        "selection_diagnostics": best["selection_diagnostics"],
-                    }
+            unknown = [name for name in strategies if name not in STRATEGY_REGISTRY]
+            if unknown:
+                raise ValueError(f"registered study contains unknown strategies: {', '.join(unknown)}")
+            protocol = {
+                key: metadata[key]
+                for key in _RESUME_COMPAT_FIELDS
+                if key not in {"study_id", "registry_path", "registry_id"}
+            }
+            protocol.update(
+                {
+                    "periods": metadata["periods"],
+                    "selection_rule": "deflated_sharpe_probability_v1",
+                    "split_rule": "ordered_40_40_20_v1",
+                    "strategy_space": {
+                        name: _jsonable(
+                            {"grid": get_strategy(name).param_grid, "universal": get_strategy(name).UNIVERSAL_PARAMS}
+                        )
+                        for name in strategies
+                    },
+                }
+            )
+            test_access = registry.register(study_id, _jsonable(protocol))
+            metadata["study_protocol_sha256"] = test_access["protocol_sha256"]
+        if not resume:
+            _archive_run_artifacts(run_dir)
+        _write_text_atomic(
+            run_dir / "run_config.json", json.dumps(_jsonable(metadata), ensure_ascii=False, indent=2, allow_nan=False)
+        )
+        print(f"  Data: {df.index[0].date()} ~ {df.index[-1].date()}, {n} bars")
+        print(f"  Train: {periods['train'][0].date()} ~ {periods['train'][1].date()}")
+        print(f"  Val:   {periods['val'][0].date()} ~ {periods['val'][1].date()}")
+        test_policy = "EXPLICIT REVEAL REQUIRED" if study_id else "LEGACY AUTO-REVEAL; PRIOR HISTORY UNKNOWN"
+        print(f"  Test:  {periods['test'][0].date()} ~ {periods['test'][1].date()} [{test_policy}]")
+
+        known = [s for s in strategies if s in STRATEGY_REGISTRY]
+        _check_strategy_dependencies(known)
+        execution.stage("research")
+        registry.record_development(
+            ticker=ticker,
+            start=periods["train"][0],
+            end=periods["val"][1],
+            data_snapshot=metadata["data_snapshot"],
+            run_id=run_id,
+            run_path=run_dir,
+            study_id=study_id,
+        )
+        for s in strategies:
+            if s not in STRATEGY_REGISTRY:
+                print(f"  WARNING: Unknown strategy '{s}' skipped. Use --list to see available names.")
+        counts = {s: get_strategy(s).count_param_combinations() for s in known}
+        if search_method == "successive_halving":
+            total = sum(min(candidate_budget, count_params) for count_params in counts.values())
+            resources_text = " -> ".join(str(value) for value in halving_resources)
+            print(
+                f"  Strategies: {len(known)} (of {len(strategies)} requested), "
+                f"Initial candidates: {total}, Validation bars: {resources_text}"
+            )
+        else:
+            total = sum(min(5, count_params) if quick else count_params for count_params in counts.values())
+            print(f"  Strategies: {len(known)} (of {len(strategies)} requested), Total experiments: {total}")
+
+        all_results = []
+        n_results = 0
+        n_skipped = 0
+        n_errors = 0
+        t0 = time.time()
+        all_csv = run_dir / "all_results.csv"
+        stage_csv = run_dir / "search_stages.csv"
+        store_path = run_dir / "results.sqlite3"
+        if resume:
+            if not store_path.exists() and all_csv.exists():
+                _migrate_csv_checkpoint(all_csv, store_path)
+            n_skipped, n_errors = _store_counts(store_path)
+            n_results = n_skipped
+            if keep_all_results and search_method == "grid":
+                all_results.extend(_iter_result_store(store_path))
+            if n_skipped:
+                print(f"  Resume: found {n_skipped} committed experiments in {store_path}")
+        else:
+            # Create the schema before work starts. SQLite transactions are the
+            # canonical crash-safe checkpoint; CSV is an atomic exported view.
+            with closing(_open_result_store(store_path)):
+                pass
+
+        use_workers = workers > 1 and len(known) > 0
+        cache_totals = {"hits": 0, "misses": 0, "evictions": 0, "observed_evaluations": 0}
+        n_stage_evaluations = 0
+        n_stage_skipped = 0
+        halving_stage_rows = []
+        halving_diagnostics = None
+
+        def _observe_cache(result):
+            stats = result.get("indicator_cache") or {}
+            if stats:
+                cache_totals["observed_evaluations"] += 1
+                for key in ("hits", "misses", "evictions"):
+                    cache_totals[key] += int(stats.get(key, 0))
+
+        def _make_pool(worker_data, worker_df, worker_periods, worker_backtest_kwargs):
+            if not use_workers:
+                return None
+            import multiprocessing as mp
+
+            return mp.get_context("spawn").Pool(
+                workers,
+                initializer=_init_worker,
+                initargs=(
+                    worker_data,
+                    worker_df,
+                    worker_periods,
+                    cost_bps,
+                    risk_free_rate,
+                    validation_folds,
+                    execution_price_column,
+                    worker_backtest_kwargs,
+                    indicator_cache_size,
                 ),
             )
-            test_access = registry.status(study_id)
-            if bootstrap:
-                selected_dev, benchmark_dev = _selected_ledgers(
-                    best,
-                    development_data,
-                    development_df,
-                    execution_price_column,
-                    cost_bps,
-                    development_backtest_kwargs,
-                )
-                bootstrap_diagnostics["periods"].update(
-                    _bootstrap_windows(
-                        selected_dev,
-                        benchmark_dev,
-                        selection_periods,
-                        [("validation", "val")],
-                        bootstrap_options,
-                        annualization,
-                        risk_free_rate,
+
+        if search_method == "grid":
+            pool = _make_pool(development_data, development_df, selection_periods, development_backtest_kwargs)
+            batch = []
+            position_cache = OrderedDict()
+            indicator_cache = IndicatorDAG(development_data, max_entries=indicator_cache_size)
+
+            def _flush_batch():
+                if batch:
+                    _store_results(batch, store_path)
+                    batch.clear()
+
+            def _handle(result):
+                nonlocal n_errors, n_results
+                n_results += 1
+                if result.get("error"):
+                    n_errors += 1
+                _observe_cache(result)
+                if keep_all_results:
+                    all_results.append(result)
+                batch.append(result)
+                if len(batch) >= 10_000:
+                    _flush_batch()
+
+            search_ok = False
+            try:
+                for sname in strategies:
+                    if sname not in STRATEGY_REGISTRY:
+                        continue
+                    strategy = get_strategy(sname)
+                    if quick:
+                        combos = _quick_sample(strategy, 5)
+                        n_combos = len(combos)
+                    else:
+                        # Iterate lazily: large grids contain hundreds of thousands
+                        # of combinations and must not be materialized as a list.
+                        combos = strategy.iter_param_combinations()
+                        n_combos = strategy.count_param_combinations()
+                    if resume:
+                        completed_for_strategy = _completed_params(store_path, sname)
+                        n_combos = max(0, n_combos - len(completed_for_strategy))
+                        combos = (
+                            params for params in combos if _canonical_params(params) not in completed_for_strategy
+                        )
+                    cat = (
+                        "ML"
+                        if sname.startswith("ml_")
+                        else ("combo" if sname in ["ensemble", "stacked", "regime_aware"] else "classic")
                     )
-                )
-        payload = None
-        if not study_id or reveal_test:
-            claim = registry.claim_test(
-                ticker=ticker,
-                start=periods["test"][0],
-                end=periods["test"][1],
-                data_snapshot=metadata["data_snapshot"],
-                run_id=run_id,
-                run_path=run_dir,
-                study_id=study_id,
-                allow_reuse=allow_test_reuse,
-                reason=test_reuse_reason,
+                    print(f"\n  [{cat}] {sname} ({n_combos} params) ...")
+
+                    if pool is not None:
+                        job = pool.imap_unordered(_worker_run, ((sname, params) for params in combos), chunksize=16)
+                        for result in tqdm(job, desc=f"  {sname}", total=n_combos, leave=True):
+                            _handle(result)
+                    else:
+                        for params in tqdm(combos, desc=f"  {sname}", total=n_combos, leave=True):
+                            result = run_single_experiment(
+                                sname,
+                                params,
+                                development_data,
+                                development_df,
+                                selection_periods,
+                                cost_bps,
+                                risk_free_rate,
+                                validation_folds=validation_folds,
+                                execution_price_column=execution_price_column,
+                                position_cache=position_cache,
+                                indicator_cache=indicator_cache,
+                                **development_backtest_kwargs,
+                            )
+                            _handle(result)
+
+                    _flush_batch()
+                    print(f"  [checkpoint] {sname} done, {n_results} total")
+                search_ok = True
+            finally:
+                # Persist whatever was completed before an interruption so --resume
+                # can pick up even when a strategy does not reach its checkpoint.
+                _flush_batch()
+                if pool is not None:
+                    if search_ok:
+                        pool.close()
+                    else:
+                        pool.terminate()
+                    pool.join()
+                if store_path.exists():
+                    _export_result_store(store_path, all_csv)
+        else:
+            survivors = {
+                sname: _quick_sample(get_strategy(sname), min(candidate_budget, counts[sname])) for sname in known
+            }
+            initial_candidates = sum(len(values) for values in survivors.values())
+            staged_search_ok = False
+            try:
+                for stage, resource_bars in enumerate(halving_resources):
+                    cutoff = validation_index[resource_bars - 1]
+                    stage_data = _slice_temporal_mapping(development_data, cutoff)
+                    stage_df = development_df.loc[:cutoff]
+                    stage_periods = {
+                        "train": selection_periods["train"],
+                        "val": (selection_periods["val"][0], cutoff),
+                    }
+                    stage_backtest_kwargs = _slice_temporal_mapping(development_backtest_kwargs, cutoff)
+                    stage_pool = _make_pool(stage_data, stage_df, stage_periods, stage_backtest_kwargs)
+                    stage_position_cache = OrderedDict()
+                    stage_indicator_cache = IndicatorDAG(stage_data, max_entries=indicator_cache_size)
+                    final_stage = stage == len(halving_resources) - 1
+                    stage_batch = []
+                    stage_ok = False
+                    stage_summary = {
+                        "stage": stage + 1,
+                        "resource_bars": resource_bars,
+                        "validation_end": str(cutoff),
+                        "input_candidates": 0,
+                        "advanced_candidates": 0,
+                        "new_evaluations": 0,
+                        "resumed_evaluations": 0,
+                        "errors": 0,
+                        "strategies": [],
+                    }
+
+                    def _flush_stage_batch(items=stage_batch, promote=final_stage):
+                        if items:
+                            _store_stage_results(items, store_path, final=promote)
+                            items.clear()
+
+                    try:
+                        print(
+                            f"\n  [halving {stage + 1}/{len(halving_resources)}] "
+                            f"{resource_bars} validation bars through {cutoff.date()}"
+                        )
+                        for sname in known:
+                            candidates = survivors[sname]
+                            stage_summary["input_candidates"] += len(candidates)
+                            restored = _load_stage_results(store_path, sname, stage, resource_bars) if resume else {}
+                            results_by_params = {
+                                _canonical_params(params): restored[_canonical_params(params)]
+                                for params in candidates
+                                if _canonical_params(params) in restored
+                            }
+                            missing = [params for params in candidates if _canonical_params(params) not in restored]
+                            resumed_count = len(candidates) - len(missing)
+                            n_stage_skipped += resumed_count
+                            stage_summary["resumed_evaluations"] += resumed_count
+                            stage_summary["errors"] += sum(
+                                bool(result.get("error")) for result in results_by_params.values()
+                            )
+                            print(f"    {sname}: {len(candidates)} candidates ({len(missing)} to run)")
+
+                            if stage_pool is not None:
+                                job = stage_pool.imap_unordered(
+                                    _worker_run,
+                                    ((sname, params) for params in missing),
+                                    chunksize=16,
+                                )
+                                iterator = tqdm(job, desc=f"    {sname}", total=len(missing), leave=True)
+                                for result in iterator:
+                                    canonical = _canonical_params(result["params"])
+                                    results_by_params[canonical] = result
+                                    stage_batch.append((sname, result["params"], stage, resource_bars, result))
+                                    n_stage_evaluations += 1
+                                    stage_summary["new_evaluations"] += 1
+                                    stage_summary["errors"] += int(bool(result.get("error")))
+                                    _observe_cache(result)
+                                    if len(stage_batch) >= 512:
+                                        _flush_stage_batch()
+                            else:
+                                for params in tqdm(missing, desc=f"    {sname}", total=len(missing), leave=True):
+                                    result = run_single_experiment(
+                                        sname,
+                                        params,
+                                        stage_data,
+                                        stage_df,
+                                        stage_periods,
+                                        cost_bps,
+                                        risk_free_rate,
+                                        validation_folds=validation_folds,
+                                        execution_price_column=execution_price_column,
+                                        position_cache=stage_position_cache,
+                                        indicator_cache=stage_indicator_cache,
+                                        **stage_backtest_kwargs,
+                                    )
+                                    canonical = _canonical_params(params)
+                                    results_by_params[canonical] = result
+                                    stage_batch.append((sname, params, stage, resource_bars, result))
+                                    n_stage_evaluations += 1
+                                    stage_summary["new_evaluations"] += 1
+                                    stage_summary["errors"] += int(bool(result.get("error")))
+                                    _observe_cache(result)
+                                    if len(stage_batch) >= 512:
+                                        _flush_stage_batch()
+
+                            _flush_stage_batch()
+                            if final_stage:
+                                # Also repairs a manually damaged canonical table
+                                # from the complete, validation-only stage journal.
+                                promoted = [results_by_params[_canonical_params(params)] for params in candidates]
+                                _store_results(promoted, store_path)
+                                next_candidates = candidates
+                            else:
+                                next_candidates = _stage_survivors(candidates, results_by_params, halving_factor)
+                            _mark_stage_survivors(store_path, sname, stage, next_candidates)
+                            survivors[sname] = next_candidates
+                            stage_summary["advanced_candidates"] += len(next_candidates)
+                            best_stage_score = max(
+                                (_stage_score(results_by_params[_canonical_params(params)]) for params in candidates),
+                                default=None,
+                            )
+                            stage_summary["strategies"].append(
+                                {
+                                    "strategy": sname,
+                                    "input_candidates": len(candidates),
+                                    "advanced_candidates": len(next_candidates),
+                                    "best_stage_sharpe": (
+                                        best_stage_score
+                                        if best_stage_score is not None and np.isfinite(best_stage_score)
+                                        else None
+                                    ),
+                                }
+                            )
+                        stage_ok = True
+                    finally:
+                        _flush_stage_batch()
+                        if stage_pool is not None:
+                            if stage_ok:
+                                stage_pool.close()
+                            else:
+                                stage_pool.terminate()
+                            stage_pool.join()
+                        _export_stage_store(store_path, stage_csv)
+                        _export_result_store(store_path, all_csv)
+                    halving_stage_rows.append(stage_summary)
+                staged_search_ok = True
+            finally:
+                if store_path.exists():
+                    _export_stage_store(store_path, stage_csv)
+                    _export_result_store(store_path, all_csv)
+
+            if staged_search_ok:
+                n_results, n_errors = _store_counts(store_path)
+                if keep_all_results:
+                    all_results = list(_iter_result_store(store_path))
+            halving_diagnostics = {
+                "method": "successive_halving",
+                "initial_candidates": initial_candidates,
+                "resource_bars": halving_resources,
+                "stages": halving_stage_rows,
+                "new_stage_evaluations": n_stage_evaluations,
+                "resumed_stage_evaluations": n_stage_skipped,
+                "total_stage_evaluations": n_stage_evaluations + n_stage_skipped,
+                "final_candidates": n_results,
+                "eliminated_candidates": max(0, initial_candidates - n_results),
+            }
+
+        elapsed = time.time() - t0
+        if halving_diagnostics is None:
+            halving_diagnostics = {
+                "method": "grid",
+                "candidate_evaluations": n_results,
+                "resumed_candidates": n_skipped,
+            }
+        cache_requests = cache_totals["hits"] + cache_totals["misses"]
+        cache_diagnostics = {
+            "max_entries_per_process": int(indicator_cache_size),
+            **cache_totals,
+            "hit_rate": cache_totals["hits"] / cache_requests if cache_requests else 0.0,
+        }
+        print(f"\n  Search complete! {n_results} results ({n_errors} errors) in {elapsed / 60:.1f} min")
+
+        if n_results == 0:
+            print("  WARNING: No experiments completed. Check strategy names and data.")
+            test_access["status"] = "no_selection"
+            execution.complete(
+                [
+                    name
+                    for name in (
+                        "run_config.json",
+                        "summary.json",
+                        "all_results.csv",
+                        "search_stages.csv",
+                        "top_results.csv",
+                        "robustness.csv",
+                        "report.md",
+                        "report.html",
+                    )
+                    if (run_dir / name).is_file()
+                ],
+                outcome="no_results",
             )
-            test_access.update(claim["access"])
-            if claim["cached"]:
-                payload = claim["payload"]
-            else:
-                event_id = test_access["event_id"]
-                try:
-                    payload = _test_payload(
+            return {
+                "all_results": [],
+                "top_results": [],
+                "best": None,
+                "robustness": None,
+                "run_id": run_id,
+                "result_dir": str(run_dir),
+                "n_results": 0,
+                "n_skipped": n_skipped,
+                "n_errors": n_errors,
+                "benchmark_metrics": None,
+                "bootstrap_diagnostics": bootstrap_diagnostics,
+                "test_access": test_access,
+                "parameter_sensitivity": None,
+                "search_diagnostics": halving_diagnostics,
+                "indicator_cache": cache_diagnostics,
+            }
+
+        # Phase 2: apply minimum-evidence constraints and rank by Deflated
+        # Sharpe probability.  The second store scan keeps exhaustive runs
+        # bounded in memory while accounting for the number of trials.
+        top, selection_diagnostics = _select_from_store(
+            store_path,
+            top_n,
+            annualization,
+            min_validation_bars,
+            min_validation_trades,
+            min_validation_exposure,
+            validation_folds,
+            trial_count_override=(
+                halving_diagnostics.get("total_stage_evaluations") if search_method == "successive_halving" else None
+            ),
+            sharpe_std_override=(
+                _stage_score_dispersion(store_path) if search_method == "successive_halving" else None
+            ),
+        )
+        if not keep_all_results:
+            all_results = []
+
+        # Phase 3: Freeze selection, then either remain sealed or reserve a reveal.
+        benchmark_metrics = None
+        if top:
+            # Copy the selected candidate so neither the checkpoint nor the
+            # validation-ranked top list is mutated with test-set information.
+            best = copy.deepcopy(top[0])
+            sname = best["strategy"]
+            params = best.get("params", {})
+            if study_id:
+                registry.bind_selection(
+                    study_id,
+                    _jsonable(
+                        {
+                            "strategy": sname,
+                            "params": params,
+                            "val_metrics": best["val_metrics"],
+                            "selection_diagnostics": best["selection_diagnostics"],
+                        }
+                    ),
+                )
+                test_access = registry.status(study_id)
+                if bootstrap:
+                    selected_dev, benchmark_dev = _selected_ledgers(
                         best,
-                        data,
-                        df,
-                        periods,
+                        development_data,
+                        development_df,
                         execution_price_column,
                         cost_bps,
-                        backtest_kwargs,
-                        annualization,
-                        risk_free_rate,
-                        bootstrap_options if bootstrap else None,
-                        include_validation=not study_id,
+                        development_backtest_kwargs,
                     )
-                    registry.complete_test(event_id, payload)
-                except BaseException as exc:
-                    # An interrupted reservation remains possible exposure even
-                    # if recording the failure itself cannot complete.
-                    try:
-                        registry.fail_test(event_id, f"{type(exc).__name__}: {exc}")
-                    except Exception as audit_error:
-                        warnings.warn(
-                            f"Could not finalize failed reveal; reservation retained: {audit_error}", RuntimeWarning
+                    bootstrap_diagnostics["periods"].update(
+                        _bootstrap_windows(
+                            selected_dev,
+                            benchmark_dev,
+                            selection_periods,
+                            [("validation", "val")],
+                            bootstrap_options,
+                            annualization,
+                            risk_free_rate,
                         )
-                    raise
-            best["test_metrics"] = payload["test_metrics"]
-            best["test_evaluated_at"] = payload["test_evaluated_at"]
-            benchmark_metrics = payload["benchmark_metrics"]
-            bootstrap_diagnostics["periods"].update(payload["bootstrap_periods"])
-            test_access["test_results_visible"] = True
-        if bootstrap:
-            statuses = [row["status"] for row in bootstrap_diagnostics["periods"].values()]
-            bootstrap_diagnostics["status"] = (
-                "ok"
-                if all(status == "ok" for status in statuses)
-                else "partial"
-                if any(status in {"ok", "partial"} for status in statuses)
-                else "unavailable"
-            )
-        print(f"\n  Best: {sname}")
-        print(f"  Params: {_params_to_str(params)}")
-        print(f"  Val Sharpe:   {best['val_metrics'].get('sharpe', 0):.4f}")
-        print(f"  Deflated Sharpe probability: {best['selection_diagnostics']['deflated_sharpe_probability']:.2%}")
-        print(f"  Test access: {test_access['status']} (history outside this registry remains unknown)")
-        if payload is not None:
-            test_m = payload["test_metrics"]
-            print(f"  Test Sharpe:  {test_m['sharpe']:.4f} (B&H: {benchmark_metrics['sharpe']:.4f})")
-            print(f"  Test CAGR:    {test_m['cagr']:.2%} (B&H: {benchmark_metrics['cagr']:.2%})")
-            print(f"  Test MaxDD:   {test_m['max_drawdown']:.2%} (B&H: {benchmark_metrics['max_drawdown']:.2%})")
+                    )
+            payload = None
+            if not study_id or reveal_test:
+                execution.stage("test_evaluation")
+                claim = registry.claim_test(
+                    ticker=ticker,
+                    start=periods["test"][0],
+                    end=periods["test"][1],
+                    data_snapshot=metadata["data_snapshot"],
+                    run_id=run_id,
+                    run_path=run_dir,
+                    study_id=study_id,
+                    allow_reuse=allow_test_reuse,
+                    reason=test_reuse_reason,
+                )
+                test_access.update(claim["access"])
+                if claim["cached"]:
+                    payload = claim["payload"]
+                else:
+                    event_id = test_access["event_id"]
+                    try:
+                        payload = _test_payload(
+                            best,
+                            data,
+                            df,
+                            periods,
+                            execution_price_column,
+                            cost_bps,
+                            backtest_kwargs,
+                            annualization,
+                            risk_free_rate,
+                            bootstrap_options if bootstrap else None,
+                            include_validation=not study_id,
+                        )
+                        registry.complete_test(event_id, payload)
+                    except BaseException as exc:
+                        # An interrupted reservation remains possible exposure even
+                        # if recording the failure itself cannot complete.
+                        try:
+                            registry.fail_test(event_id, f"{type(exc).__name__}: {exc}")
+                        except Exception as audit_error:
+                            warnings.warn(
+                                f"Could not finalize failed reveal; reservation retained: {audit_error}", RuntimeWarning
+                            )
+                        raise
+                best["test_metrics"] = payload["test_metrics"]
+                best["test_evaluated_at"] = payload["test_evaluated_at"]
+                benchmark_metrics = payload["benchmark_metrics"]
+                bootstrap_diagnostics["periods"].update(payload["bootstrap_periods"])
+                test_access["test_results_visible"] = True
+            if bootstrap:
+                statuses = [row["status"] for row in bootstrap_diagnostics["periods"].values()]
+                bootstrap_diagnostics["status"] = (
+                    "ok"
+                    if all(status == "ok" for status in statuses)
+                    else "partial"
+                    if any(status in {"ok", "partial"} for status in statuses)
+                    else "unavailable"
+                )
+            print(f"\n  Best: {sname}")
+            print(f"  Params: {_params_to_str(params)}")
+            print(f"  Val Sharpe:   {best['val_metrics'].get('sharpe', 0):.4f}")
+            print(f"  Deflated Sharpe probability: {best['selection_diagnostics']['deflated_sharpe_probability']:.2%}")
+            print(f"  Test access: {test_access['status']} (history outside this registry remains unknown)")
+            if payload is not None:
+                test_m = payload["test_metrics"]
+                print(f"  Test Sharpe:  {test_m['sharpe']:.4f} (B&H: {benchmark_metrics['sharpe']:.4f})")
+                print(f"  Test CAGR:    {test_m['cagr']:.2%} (B&H: {benchmark_metrics['cagr']:.2%})")
+                print(f"  Test MaxDD:   {test_m['max_drawdown']:.2%} (B&H: {benchmark_metrics['max_drawdown']:.2%})")
+            else:
+                print("  Test scores remain hidden. Explicitly reveal the frozen study when ready.")
         else:
-            print("  Test scores remain hidden. Explicitly reveal the frozen study when ready.")
-    else:
-        best = None
-        test_access["status"] = "no_selection"
-        print("  WARNING: No valid experiments remained after evaluation.")
+            best = None
+            test_access["status"] = "no_selection"
+            print("  WARNING: No valid experiments remained after evaluation.")
 
-    # Phase 4: Robustness check on the best parameters
-    robustness = None
-    if robust and best is not None:
-        print(f"\n  [Phase 4] Parameter sensitivity (perturbing selected params by {robust_frac:.0%}) ...")
-        robustness = robustness_check(
-            development_data,
-            development_df,
-            selection_periods,
-            sname,
-            params,
-            cost_bps=cost_bps,
-            frac=robust_frac,
-            backtest_kwargs=development_backtest_kwargs,
-            risk_free_rate=risk_free_rate,
-            execution_price_column=execution_price_column,
+        # Phase 4: Robustness check on the best parameters
+        robustness = None
+        if robust and best is not None:
+            print(f"\n  [Phase 4] Parameter sensitivity (perturbing selected params by {robust_frac:.0%}) ...")
+            robustness = robustness_check(
+                development_data,
+                development_df,
+                selection_periods,
+                sname,
+                params,
+                cost_bps=cost_bps,
+                frac=robust_frac,
+                backtest_kwargs=development_backtest_kwargs,
+                risk_free_rate=risk_free_rate,
+                execution_price_column=execution_price_column,
+            )
+            if robustness.get("error"):
+                print(f"    Skipped: {robustness['error']}")
+            else:
+                st = robustness["stats"]
+                print(f"    Baseline val Sharpe: {robustness['baseline']:.4f}")
+                print(f"    Neighbors evaluated: {robustness['n_neighbors']}")
+                print(
+                    f"    Neighbor val Sharpe: mean={st['mean']:.4f} "
+                    f"median={st['median']:.4f} min={st['min']:.4f} "
+                    f"max={st['max']:.4f} std={st['std']:.4f}"
+                )
+                print(
+                    f"    Degraded (<50% base): {robustness['pct_degrade']:.1%} | "
+                    f"Positive neighbors: {robustness['pct_positive']:.1%}"
+                )
+                print(
+                    f"    Sensitivity grade: {robustness['grade']} "
+                    f"({robustness['verdict']})"
+                    + ("  [ISOLATED PEAK - fragile locally]" if robustness["isolated_peak"] else "")
+                )
+                robustness_frame = pd.DataFrame(
+                    [
+                        {
+                            "strategy": sname,
+                            "params": json.dumps(params, ensure_ascii=False, default=_jsonable),
+                            "baseline_val_sharpe": robustness["baseline"],
+                            "n_neighbors": robustness["n_neighbors"],
+                            "neighbor_mean": st["mean"],
+                            "neighbor_median": st["median"],
+                            "neighbor_std": st["std"],
+                            "neighbor_min": st["min"],
+                            "neighbor_max": st["max"],
+                            "pct_degrade": robustness["pct_degrade"],
+                            "pct_positive": robustness["pct_positive"],
+                            "grade": robustness["grade"],
+                            "verdict": robustness["verdict"],
+                            "isolated_peak": robustness["isolated_peak"],
+                        }
+                    ]
+                )
+                _write_frame_atomic(robustness_frame, run_dir / "robustness.csv")
+                print(f"    Saved to {run_dir / 'robustness.csv'}")
+
+        execution.stage("publishing")
+        # Save validation-ranked candidates and the one final-selection summary.
+        if top:
+            rows = []
+            for r in top:
+                row = {
+                    "strategy": r["strategy"],
+                    "params": json.dumps(r.get("params", {}), ensure_ascii=False, default=_jsonable),
+                }
+                for p in ["train", "val"]:
+                    m = r.get(f"{p}_metrics", {})
+                    for k, v in m.items():
+                        row[f"{p}_{k}"] = v
+                diagnostics = r.get("selection_diagnostics", {})
+                for key, value in diagnostics.items():
+                    row[f"selection_{key}"] = value
+                rows.append(row)
+            _write_frame_atomic(pd.DataFrame(rows), run_dir / "top_results.csv")
+
+        summary = {
+            "run_id": run_id,
+            "data_provenance": _jsonable(data_provenance),
+            "best": _jsonable(best),
+            "benchmark_metrics": _jsonable(benchmark_metrics),
+            "bootstrap_diagnostics": _jsonable(bootstrap_diagnostics),
+            "test_access": _jsonable(test_access),
+            "selection_diagnostics": _jsonable(selection_diagnostics),
+            "search_diagnostics": _jsonable(halving_diagnostics),
+            "indicator_cache": _jsonable(cache_diagnostics),
+            "parameter_sensitivity": _jsonable(robustness),
+            "n_results": n_results,
+            "n_skipped": n_skipped,
+            "n_errors": n_errors,
+        }
+        report_paths = {}
+        if generate_report:
+            markdown_path = run_dir / "report.md"
+            html_path = run_dir / "report.html"
+            _write_text_atomic(markdown_path, render_markdown_report(summary, metadata))
+            _write_text_atomic(html_path, render_html_report(summary, metadata))
+            report_paths = {"markdown": str(markdown_path), "html": str(html_path)}
+            summary["reports"] = {"markdown": markdown_path.name, "html": html_path.name}
+        _write_text_atomic(
+            run_dir / "summary.json",
+            json.dumps(summary, ensure_ascii=False, indent=2, allow_nan=False),
         )
-        if robustness.get("error"):
-            print(f"    Skipped: {robustness['error']}")
-        else:
-            st = robustness["stats"]
-            print(f"    Baseline val Sharpe: {robustness['baseline']:.4f}")
-            print(f"    Neighbors evaluated: {robustness['n_neighbors']}")
-            print(
-                f"    Neighbor val Sharpe: mean={st['mean']:.4f} "
-                f"median={st['median']:.4f} min={st['min']:.4f} "
-                f"max={st['max']:.4f} std={st['std']:.4f}"
-            )
-            print(
-                f"    Degraded (<50% base): {robustness['pct_degrade']:.1%} | "
-                f"Positive neighbors: {robustness['pct_positive']:.1%}"
-            )
-            print(
-                f"    Sensitivity grade: {robustness['grade']} "
-                f"({robustness['verdict']})"
-                + ("  [ISOLATED PEAK - fragile locally]" if robustness["isolated_peak"] else "")
-            )
-            robustness_frame = pd.DataFrame(
-                [
-                    {
-                        "strategy": sname,
-                        "params": json.dumps(params, ensure_ascii=False, default=_jsonable),
-                        "baseline_val_sharpe": robustness["baseline"],
-                        "n_neighbors": robustness["n_neighbors"],
-                        "neighbor_mean": st["mean"],
-                        "neighbor_median": st["median"],
-                        "neighbor_std": st["std"],
-                        "neighbor_min": st["min"],
-                        "neighbor_max": st["max"],
-                        "pct_degrade": robustness["pct_degrade"],
-                        "pct_positive": robustness["pct_positive"],
-                        "grade": robustness["grade"],
-                        "verdict": robustness["verdict"],
-                        "isolated_peak": robustness["isolated_peak"],
-                    }
-                ]
-            )
-            _write_frame_atomic(robustness_frame, run_dir / "robustness.csv")
-            print(f"    Saved to {run_dir / 'robustness.csv'}")
 
-    # Save validation-ranked candidates and the one final-selection summary.
-    if top:
-        rows = []
-        for r in top:
-            row = {
-                "strategy": r["strategy"],
-                "params": json.dumps(r.get("params", {}), ensure_ascii=False, default=_jsonable),
-            }
-            for p in ["train", "val"]:
-                m = r.get(f"{p}_metrics", {})
-                for k, v in m.items():
-                    row[f"{p}_{k}"] = v
-            diagnostics = r.get("selection_diagnostics", {})
-            for key, value in diagnostics.items():
-                row[f"selection_{key}"] = value
-            rows.append(row)
-        _write_frame_atomic(pd.DataFrame(rows), run_dir / "top_results.csv")
-
-    summary = {
-        "run_id": run_id,
-        "data_provenance": _jsonable(data_provenance),
-        "best": _jsonable(best),
-        "benchmark_metrics": _jsonable(benchmark_metrics),
-        "bootstrap_diagnostics": _jsonable(bootstrap_diagnostics),
-        "test_access": _jsonable(test_access),
-        "selection_diagnostics": _jsonable(selection_diagnostics),
-        "search_diagnostics": _jsonable(halving_diagnostics),
-        "indicator_cache": _jsonable(cache_diagnostics),
-        "parameter_sensitivity": _jsonable(robustness),
-        "n_results": n_results,
-        "n_skipped": n_skipped,
-        "n_errors": n_errors,
-    }
-    report_paths = {}
-    if generate_report:
-        markdown_path = run_dir / "report.md"
-        html_path = run_dir / "report.html"
-        _write_text_atomic(markdown_path, render_markdown_report(summary, metadata))
-        _write_text_atomic(html_path, render_html_report(summary, metadata))
-        report_paths = {"markdown": str(markdown_path), "html": str(html_path)}
-        summary["reports"] = {"markdown": markdown_path.name, "html": html_path.name}
-    _write_text_atomic(
-        run_dir / "summary.json",
-        json.dumps(summary, ensure_ascii=False, indent=2, allow_nan=False),
-    )
-
-    return {
-        "all_results": all_results,
-        "data_provenance": data_provenance,
-        "top_results": top,
-        "best": best,
-        "robustness": robustness,
-        "parameter_sensitivity": robustness,
-        "benchmark_metrics": benchmark_metrics,
-        "bootstrap_diagnostics": bootstrap_diagnostics,
-        "test_access": test_access,
-        "selection_diagnostics": selection_diagnostics,
-        "search_diagnostics": halving_diagnostics,
-        "indicator_cache": cache_diagnostics,
-        "run_id": run_id,
-        "result_dir": str(run_dir),
-        "n_results": n_results,
-        "n_skipped": n_skipped,
-        "n_errors": n_errors,
-        "reports": report_paths,
-    }
+        execution.complete(
+            [
+                name
+                for name in (
+                    "run_config.json",
+                    "summary.json",
+                    "all_results.csv",
+                    "search_stages.csv",
+                    "top_results.csv",
+                    "robustness.csv",
+                    "report.md",
+                    "report.html",
+                )
+                if (run_dir / name).is_file()
+            ]
+        )
+        return {
+            "all_results": all_results,
+            "data_provenance": data_provenance,
+            "top_results": top,
+            "best": best,
+            "robustness": robustness,
+            "parameter_sensitivity": robustness,
+            "benchmark_metrics": benchmark_metrics,
+            "bootstrap_diagnostics": bootstrap_diagnostics,
+            "test_access": test_access,
+            "selection_diagnostics": selection_diagnostics,
+            "search_diagnostics": halving_diagnostics,
+            "indicator_cache": cache_diagnostics,
+            "run_id": run_id,
+            "result_dir": str(run_dir),
+            "n_results": n_results,
+            "n_skipped": n_skipped,
+            "n_errors": n_errors,
+            "reports": report_paths,
+        }

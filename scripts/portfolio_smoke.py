@@ -107,6 +107,10 @@ def main():
         assert "already exists" in invoke("portfolio", "--config", path, "--acknowledge-history", success=False)
         assert before == (output / "summary.json").read_bytes()
         assert len(registry.history()) == 2
+        receipt = json.loads(invoke("runs", "history", output, "--verify"))
+        assert receipt["status"] == "completed" and receipt["integrity"] == "verified"
+        assert receipt["attempt"]["workflow"] == "portfolio"
+        assert len(receipt["history"]) == 1 and "metrics" not in json.dumps(receipt)
     print(
         "Portfolio smoke: passed (core wheel, six frozen ledgers, offline CLI, delayed fills, cash/fees, audit, no overwrite)"
     )

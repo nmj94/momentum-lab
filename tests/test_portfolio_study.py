@@ -16,10 +16,12 @@ from momentum_lab import (
     PortfolioStudyConfig,
     PortfolioStudyRegistry,
     RegistryError,
+    RunBusyError,
     StudyRegistry,
     TestReuseError,
     cli,
     data,
+    inspect_run,
     run_portfolio,
     run_portfolio_study,
 )
@@ -154,6 +156,35 @@ def test_reveal_requires_prior_completed_invocation_before_reading_data(config, 
     with pytest.raises(RegistryError, match="registry not found"):
         run(config, reveal_test=True)
     assert not Path(config.result_dir).exists()
+
+
+def test_study_run_receipts_cover_development_reveal_and_summary_only_replay(config):
+    developed = run_portfolio_study(config)
+    revealed = run(config, "reveal-owned", reveal_test=True)
+    replayed = run(config, "replay-owned", reveal_test=True)
+    for result in (developed, revealed, replayed):
+        state = inspect_run(result["result_dir"], verify=True)
+        assert state["status"] == "completed"
+        assert state["integrity"] == "verified"
+        assert state["attempt"]["workflow"] == "portfolio_study"
+        assert "test_metrics" not in json.dumps(state)
+    assert inspect_run(replayed["result_dir"], verify=True)["artifact_count"] == 4
+    assert replayed["artifact_scope"] == "cached_summary_only"
+
+
+def test_study_directory_lock_precedes_duplicate_registration_or_computation(config, monkeypatch):
+    compute = ps._compute_books
+
+    def checked(*args, **kwargs):
+        before = StudyRegistry(create=False).history()
+        with pytest.raises(RunBusyError):
+            run_portfolio_study(config)
+        assert before == StudyRegistry(create=False).history()
+        return compute(*args, **kwargs)
+
+    monkeypatch.setattr(ps, "_compute_books", checked)
+    result = run_portfolio_study(config)
+    assert inspect_run(result["result_dir"], verify=True)["integrity"] == "verified"
 
 
 def test_all_asset_test_reservations_precede_full_evaluation(config, monkeypatch):

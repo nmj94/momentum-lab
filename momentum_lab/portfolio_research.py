@@ -7,6 +7,7 @@ recorded as development observations BEFORE scores or portfolio P&L are computed
 import argparse
 import hashlib
 import json
+import sqlite3
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, fields
 from datetime import datetime, timezone
@@ -35,6 +36,7 @@ from .portfolio import (
     validate_momentum_options,
 )
 from .portfolio_reporting import render_portfolio_html, render_portfolio_markdown
+from .run_control import RunSession, RunStateError
 from .search import (
     _data_snapshot,
     _environment_manifest,
@@ -351,63 +353,73 @@ def run_portfolio(config, *, acknowledge_history=False):
     eligibility, membership_source = _membership(config, prices)
     run_id = config.run_id or f"portfolio_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{uuid4().hex[:8]}"
     output = Path(config.result_dir) / run_id
-    if output.exists():
-        raise PortfolioError("Portfolio output already exists; use a new run_id (no overwrite or implicit resume)")
-    registry = StudyRegistry(config.registry_path)
-    try:
-        output.mkdir(parents=True, exist_ok=False)
-    except OSError as exc:
-        raise PortfolioError(f"Cannot create a new portfolio output directory: {exc}") from exc
-    first_source = next(iter(provenance.values()))
-    recipe = config.to_dict()
-    recipe["datasets"] = {ticker.upper(): str(Path(path).resolve()) for ticker, path in config.datasets.items()}
-    recipe["result_dir"] = str(Path(config.result_dir).resolve())
-    recipe["run_id"] = run_id
-    recipe["registry_path"] = str(registry.path)
-    contract = _research_contract(config, provenance, snapshots, membership_source)
-    contract_hash = hashlib.sha256(
-        json.dumps(contract, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8")
-    ).hexdigest()
-    metadata = {
-        **contract,
-        "config": recipe,
-        "run_id": run_id,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "git_sha": _git_revision(),
-        "contract_sha256": contract_hash,
-        "registry_id": registry.registry_id,
-        "registry_path": str(registry.path),
-        "history_acknowledged": True,
-        "history_notice": HISTORY_NOTICE,
-        "data_start": str(prices.index[0].date()),
-        "data_end": str(prices.index[-1].date()),
-        "annualization": first_source["annualization"],
-        "currency": first_source["currency"],
-    }
-    _write_text_atomic(output / "run_config.json", json.dumps(metadata, ensure_ascii=False, indent=2, allow_nan=False))
-    # Do not start even signal calculation until ALL reservations are durable.
-    # If a later reservation fails, earlier records conservatively remain;
-    # retrying must not erase them or manufacture fresh evidence.
-    for ticker in prices.columns:
-        registry.record_development(
-            ticker=ticker,
-            start=prices.index[0],
-            end=prices.index[-1],
-            data_snapshot=snapshots[ticker],
-            run_id=run_id,
-            run_path=output,
-            study_id=None,
+    with RunSession(output, "portfolio", mode="new") as execution:
+        if output.exists():
+            raise PortfolioError("Portfolio output already exists; use a new run_id (no overwrite or implicit resume)")
+        registry = StudyRegistry(config.registry_path)
+        try:
+            output.mkdir(parents=True, exist_ok=False)
+        except OSError as exc:
+            raise PortfolioError(f"Cannot create a new portfolio output directory: {exc}") from exc
+        execution.start()
+        execution.stage("research")
+        first_source = next(iter(provenance.values()))
+        recipe = config.to_dict()
+        recipe["datasets"] = {ticker.upper(): str(Path(path).resolve()) for ticker, path in config.datasets.items()}
+        recipe["result_dir"] = str(Path(config.result_dir).resolve())
+        recipe["run_id"] = run_id
+        recipe["registry_path"] = str(registry.path)
+        contract = _research_contract(config, provenance, snapshots, membership_source)
+        contract_hash = hashlib.sha256(
+            json.dumps(contract, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode(
+                "utf-8"
+            )
+        ).hexdigest()
+        metadata = {
+            **contract,
+            "config": recipe,
+            "run_id": run_id,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "git_sha": _git_revision(),
+            "contract_sha256": contract_hash,
+            "registry_id": registry.registry_id,
+            "registry_path": str(registry.path),
+            "history_acknowledged": True,
+            "history_notice": HISTORY_NOTICE,
+            "data_start": str(prices.index[0].date()),
+            "data_end": str(prices.index[-1].date()),
+            "annualization": first_source["annualization"],
+            "currency": first_source["currency"],
+        }
+        _write_text_atomic(
+            output / "run_config.json", json.dumps(metadata, ensure_ascii=False, indent=2, allow_nan=False)
         )
-    books = _compute_books(config, prices, eligibility)
-    summary = _summarize_books(config, prices, books, metadata)
-    for name, frame in _book_exports(books).items():
-        _write_frame_atomic(frame.reset_index(), output / name)
-    _write_text_atomic(output / "report.md", render_portfolio_markdown(summary, metadata))
-    _write_text_atomic(output / "report.html", render_portfolio_html(summary, metadata))
-    summary["reports"] = {"markdown": "report.md", "html": "report.html"}
-    # Completion marker comes last; a failed export never looks completed.
-    _write_text_atomic(output / "summary.json", json.dumps(summary, ensure_ascii=False, indent=2, allow_nan=False))
-    return {**summary, "result_dir": str(output)}
+        # Do not start even signal calculation until ALL reservations are durable.
+        # If a later reservation fails, earlier records conservatively remain;
+        # retrying must not erase them or manufacture fresh evidence.
+        for ticker in prices.columns:
+            registry.record_development(
+                ticker=ticker,
+                start=prices.index[0],
+                end=prices.index[-1],
+                data_snapshot=snapshots[ticker],
+                run_id=run_id,
+                run_path=output,
+                study_id=None,
+            )
+        books = _compute_books(config, prices, eligibility)
+        summary = _summarize_books(config, prices, books, metadata)
+        execution.stage("publishing")
+        exports = _book_exports(books)
+        for name, frame in exports.items():
+            _write_frame_atomic(frame.reset_index(), output / name)
+        _write_text_atomic(output / "report.md", render_portfolio_markdown(summary, metadata))
+        _write_text_atomic(output / "report.html", render_portfolio_html(summary, metadata))
+        summary["reports"] = {"markdown": "report.md", "html": "report.html"}
+        # Completion marker comes last; a failed export never looks completed.
+        _write_text_atomic(output / "summary.json", json.dumps(summary, ensure_ascii=False, indent=2, allow_nan=False))
+        execution.complete(["run_config.json", "summary.json", "report.md", "report.html", *exports])
+        return {**summary, "result_dir": str(output)}
 
 
 def main(argv=None):
@@ -437,7 +449,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         result = run_portfolio(args.config, acknowledge_history=args.acknowledge_history)
-    except (PortfolioError, DatasetError, RegistryError) as exc:
+    except (PortfolioError, DatasetError, RegistryError, RunStateError, OSError, sqlite3.DatabaseError) as exc:
         parser.error(str(exc))
     print(f"Portfolio completed: {result['run_id']} ({len(result['assets'])} assets, {result['n_bars']} bars)")
     print(HISTORY_NOTICE)

@@ -9,7 +9,17 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from momentum_lab import PortfolioConfig, PortfolioError, StudyRegistry, TestReuseError, cli, data, run_portfolio
+from momentum_lab import (
+    PortfolioConfig,
+    PortfolioError,
+    RunBusyError,
+    StudyRegistry,
+    TestReuseError,
+    cli,
+    data,
+    inspect_run,
+    run_portfolio,
+)
 from momentum_lab import portfolio_research as pr
 from momentum_lab.datasets import import_dataset
 from momentum_lab.governance import RegistryError
@@ -60,6 +70,41 @@ def config(tmp_path):
 
 def metadata(config):
     return json.loads((Path(config.result_dir) / config.run_id / "run_config.json").read_text())
+
+
+def test_portfolio_run_receipt_and_contention_preserve_one_complete_output(config, monkeypatch):
+    compute = pr._compute_books
+
+    def checked(*args, **kwargs):
+        before = StudyRegistry(create=False).history()
+        with pytest.raises(RunBusyError):
+            run_portfolio(config, acknowledge_history=True)
+        assert before == StudyRegistry(create=False).history()
+        return compute(*args, **kwargs)
+
+    monkeypatch.setattr(pr, "_compute_books", checked)
+    result = run_portfolio(config, acknowledge_history=True)
+    state = inspect_run(result["result_dir"], verify=True)
+    assert state["status"] == "completed"
+    assert state["integrity"] == "verified"
+    assert state["attempt"]["workflow"] == "portfolio"
+    assert len(state["history"]) == 1
+    assert "metrics" not in json.dumps(state)
+
+
+@pytest.mark.parametrize("failure", ["computation", "publication"])
+def test_portfolio_failures_have_recovery_state_without_erasing_exposure(config, monkeypatch, failure):
+    def fail(*args, **kwargs):
+        raise OSError("simulated interruption")
+
+    monkeypatch.setattr(pr, "_compute_books" if failure == "computation" else "_write_frame_atomic", fail)
+    with pytest.raises(OSError, match="simulated interruption"):
+        run_portfolio(config, acknowledge_history=True)
+    state = inspect_run(Path(config.result_dir) / config.run_id, verify=True)
+    assert state["status"] == "failed"
+    assert state["integrity"] == "unavailable"
+    assert "new run_id" in state["recovery"]
+    assert len(StudyRegistry(create=False).history()) == len(config.datasets)
 
 
 def change_manifest(config, ticker="BBB", **changes):

@@ -3,7 +3,7 @@
 ## Supported versions
 
 Security and data-integrity fixes are applied to the latest tagged or documented
-release on `master` (currently 0.14.1). Older versions are not maintained as
+release on `master` (currently 0.15.0). Older versions are not maintained as
 separate security branches. Install from this repository; the PyPI name
 `momentum-lab` belongs to an unrelated project.
 

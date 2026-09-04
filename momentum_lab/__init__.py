@@ -13,6 +13,7 @@ from .portfolio_research import PortfolioConfig, run_portfolio
 from .portfolio_study import PortfolioStudyConfig, run_portfolio_study
 from .reporting import render_html_report, render_markdown_report
 from .robustness import robustness_check
+from .run_control import RunBusyError, RunStateError, inspect_run
 from .search import run_search
 from .strategies import (
     STRATEGY_REGISTRY,
@@ -34,6 +35,8 @@ __all__ = [
     "PortfolioStudyRegistry",
     "RegimeAware",
     "RegistryError",
+    "RunBusyError",
+    "RunStateError",
     "SearchConfig",
     "StudyRegistry",
     "TestReuseError",
@@ -46,6 +49,7 @@ __all__ = [
     "evaluate_strategy",
     "get_strategy",
     "import_dataset",
+    "inspect_run",
     "list_strategies",
     "load_dataset",
     "load_membership",

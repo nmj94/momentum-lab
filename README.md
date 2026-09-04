@@ -57,6 +57,27 @@ momentum-lab SPY --all-strategies --exhaustive --workers 8
 The future PyPI distribution name is `momentum-research-lab`; the Python import
 and CLI remain `momentum_lab` and `momentum-lab`.
 
+## v0.15 — Run ownership and recovery visibility
+
+Single-asset searches, exploratory portfolios and registered portfolio studies
+now protect each output directory with a whole-run local OS lock. Competing
+coordinators fail before writing to the same output; interrupted attempts retain
+their history. Completion records include file sizes and SHA-256 receipts.
+
+```bash
+# These commands never reveal scores, resume a search or recalculate a test.
+momentum-lab runs status experiments/gld-dev
+momentum-lab runs history experiments/gld-dev --limit 10
+momentum-lab runs status experiments/gld-dev --verify
+```
+
+Default inspection reads metadata only; `--verify` hashes the latest completed
+artifact set without displaying its contents. See [RUNS.md](RUNS.md) for states,
+recovery, backup and filesystem limits. This is not a whole-directory transaction,
+distributed lease or tamper-proof signature. Research access history and explicit
+reveal/reuse consent are unchanged. Upgrade with new runs/protocols; old
+source/version-locked research still needs its original environment.
+
 ## v0.14.1 integrity fixes
 
 Fixed symbolic-ticker cache collisions and CSV precision drift, constant-return
@@ -541,9 +562,10 @@ uv run ruff check .
 uv run pytest -m "not network" -q
 ```
 
-CI tests Python 3.10—3.13, builds and installs the wheel in a clean environment,
-enforces a coverage floor, and runs provider-contract tests weekly. Release
-automation remains on the roadmap.
+CI tests Python 3.10—3.13 on Linux, checks run ownership and workflow integration
+on macOS/Windows, builds and installs the wheel in a clean environment, enforces
+a coverage floor, and runs provider-contract tests weekly. Release automation
+remains on the roadmap.
 
 ## License
 

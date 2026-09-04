@@ -174,6 +174,25 @@ Remaining portfolio work, in order before parameter search or paper execution:
 - Portfolio liquidity/impact/partial-fill models validated against independent
   ledgers; the v0.13 linear-cost book does not inherit these single-asset features.
 
+## v0.15 — Local run reliability and recovery visibility
+
+Delivered in v0.15.0:
+
+- Whole-coordinator local OS locks for all three research workflows, native
+  filesystem aliases, non-blocking contention and fork-safe descriptor ownership.
+- Separate operational attempt history, conservative crash detection and
+  score-free status/history commands with explicit recovery guidance.
+- Completion-bound file-size/SHA-256 receipts, opt-in verification without
+  score display, real-process regressions and macOS/Windows integration CI.
+
+This does not add automatic resume, whole-directory rollback, network-filesystem
+leases or trusted remote custody. Existing research exposure and reveal rules
+still apply. Next reliability work is a versioned, complete backup/export and
+restore contract covering run outputs, operational state and research registry
+identity together; no partial-copy "recovery" should reset observation history.
+The point-in-time data and accounting gates above still precede portfolio search
+or paper execution.
+
 ## v1.0 — Stable research platform
 
 - Stable public API and migration policy.
