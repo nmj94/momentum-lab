@@ -59,6 +59,94 @@ def _aligned_numeric_input(value, index, name, *, minimum=None, exclusive_minimu
     return aligned
 
 
+def _period_accrual_input(value, index, name, annualization, *, minimum=None, exclusive_minimum=None):
+    """Integrate an annual-rate scalar or effective-dated schedule per bar."""
+    aligned = _aligned_numeric_input(value, index, name, minimum=minimum, exclusive_minimum=exclusive_minimum)
+    if not isinstance(index, pd.DatetimeIndex):
+        result = aligned / float(annualization)
+        if len(result):
+            result.iloc[0] = 0.0
+        return result
+    result = pd.Series(0.0, index=index, dtype=float)
+    if not isinstance(value, pd.Series):
+        elapsed = index.to_series().diff().dt.total_seconds().div(365.25 * 24 * 60 * 60).fillna(0.0)
+        return aligned * elapsed
+    schedule = value.astype(float)
+    if not isinstance(schedule.index, pd.DatetimeIndex) or schedule.index.tz != index.tz:
+        raise ValueError(f"{name} schedule index is incompatible with prices")
+    year_seconds = 365.25 * 24 * 60 * 60
+    for i in range(1, len(index)):
+        left, right = index[i - 1], index[i]
+        changes = schedule.loc[(schedule.index > left) & (schedule.index < right)]
+        cursor = left
+        rate = float(schedule.loc[:left].iloc[-1])
+        accrued = 0.0
+        for effective_at, next_rate in changes.items():
+            accrued += rate * (effective_at - cursor).total_seconds() / year_seconds
+            cursor, rate = effective_at, float(next_rate)
+        accrued += rate * (right - cursor).total_seconds() / year_seconds
+        result.iloc[i] = accrued
+    return result
+
+
+def _execution_cost_dollars(
+    trade_dollars,
+    dollar_volume,
+    cost_bps,
+    slippage_bps,
+    spread_bps,
+    impact_bps,
+    impact_exponent,
+    impact_reference_participation,
+    min_fee,
+):
+    """Return total execution cost for an absolute currency notional."""
+    if trade_dollars <= 0.0:
+        return 0.0
+    commission = max(trade_dollars * cost_bps / 10000.0, min_fee)
+    impact = 0.0
+    if impact_bps > 0.0:
+        participation = trade_dollars / dollar_volume if dollar_volume > 0.0 else 0.0
+        impact = impact_bps * (participation / impact_reference_participation) ** impact_exponent
+    return commission + trade_dollars * (slippage_bps + spread_bps / 2.0 + impact) / 10000.0
+
+
+def _target_trade_dollars(asset_value, pre_trade_nav, desired, cost_function):
+    """Solve the signed notional that reaches a post-cost target weight."""
+    if desired == 0.0:
+        return -asset_value
+
+    def residual(trade):
+        return asset_value + trade - desired * (pre_trade_nav - cost_function(abs(trade)))
+
+    initial = residual(0.0)
+    if abs(initial) <= 1e-14 * max(pre_trade_nav, 1.0):
+        return 0.0
+    direction = -1.0 if initial > 0.0 else 1.0
+    low, high = 0.0, max(abs(desired * pre_trade_nav - asset_value), pre_trade_nav * 1e-12)
+    for _ in range(64):
+        if residual(direction * high) * initial <= 0.0:
+            break
+        high *= 2.0
+        if not np.isfinite(high) or high > pre_trade_nav * 1e6:
+            raise ValueError("transaction-cost model cannot reach the requested target")
+    else:
+        raise ValueError("transaction-cost model cannot reach the requested target")
+    for _ in range(80):
+        middle = (low + high) / 2.0
+        if residual(direction * middle) * initial > 0.0:
+            low = middle
+        else:
+            high = middle
+    candidate = direction * high
+    post_cost_nav = pre_trade_nav - cost_function(abs(candidate))
+    if post_cost_nav <= 0.0:
+        return 0.0
+    achieved_error = abs((asset_value + candidate) / post_cost_nav - desired)
+    no_trade_error = abs(asset_value / pre_trade_nav - desired)
+    return candidate if achieved_error < no_trade_error else 0.0
+
+
 def _aligned_bool_input(value, index, name):
     """Align a boolean availability schedule without backfilling future data."""
     if isinstance(value, pd.Series):
@@ -116,7 +204,8 @@ def backtest(
         annualization: Number of return periods per year (252 for trading days,
             365 for continuously traded daily assets).
         financing_rate: Annual base financing rate applied to absolute exposure
-            above 1x. A dated Series is forward-filled without look-ahead.
+            above 1x. A dated Series is integrated from each effective timestamp
+            without applying later values retroactively.
         borrow_bps: Annualized short borrow fee in basis points. May be a dated
             Series for time-varying borrow conditions.
         slippage_bps: Additional transaction slippage in basis points.
@@ -242,12 +331,18 @@ def backtest(
     # formed from close[t] is first filled at close[t+1].
     executed_targets = positions.shift(int(execution_lag)).fillna(0.0)
 
-    cash_rates = _aligned_numeric_input(cash_rate, prices.index, "cash_rate", exclusive_minimum=-1.0)
-    financing_rates = _aligned_numeric_input(financing_rate, prices.index, "financing_rate", minimum=0.0)
-    financing_spreads = _aligned_numeric_input(financing_spread, prices.index, "financing_spread", minimum=0.0)
-    borrow_rates = _aligned_numeric_input(borrow_bps, prices.index, "borrow_bps", minimum=0.0) / 10000.0
-    short_rebate_rates = _aligned_numeric_input(
-        short_rebate_rate, prices.index, "short_rebate_rate", exclusive_minimum=-1.0
+    cash_accruals = _period_accrual_input(cash_rate, prices.index, "cash_rate", annualization, exclusive_minimum=-1.0)
+    financing_accruals = _period_accrual_input(
+        financing_rate, prices.index, "financing_rate", annualization, minimum=0.0
+    )
+    financing_spread_accruals = _period_accrual_input(
+        financing_spread, prices.index, "financing_spread", annualization, minimum=0.0
+    )
+    borrow_accruals = (
+        _period_accrual_input(borrow_bps, prices.index, "borrow_bps", annualization, minimum=0.0) / 10000.0
+    )
+    short_rebate_accruals = _period_accrual_input(
+        short_rebate_rate, prices.index, "short_rebate_rate", annualization, exclusive_minimum=-1.0
     )
     spreads = _aligned_numeric_input(spread_bps, prices.index, "spread_bps", minimum=0.0)
     borrow_schedule = _aligned_bool_input(borrow_available, prices.index, "borrow_available")
@@ -264,19 +359,6 @@ def backtest(
     else:
         volumes = pd.Series(0.0, index=prices.index, dtype=float)
 
-    if isinstance(prices.index, pd.DatetimeIndex):
-        elapsed_years = prices.index.to_series().diff().dt.total_seconds().div(365.25 * 24 * 60 * 60).fillna(0.0)
-        if (elapsed_years < 0).any():
-            raise ValueError("prices index must be sorted and unique")
-    else:
-        elapsed_years = pd.Series(1.0 / annualization, index=prices.index)
-        elapsed_years.iloc[0] = 0.0
-
-    def _period_rate(rate, fraction):
-        # Financing and borrow inputs are quoted as simple annual rates; use
-        # actual elapsed calendar time for dated data and bars/year otherwise.
-        return rate * fraction
-
     strategy_returns = pd.Series(0.0, index=prices.index, dtype=float)
     trades = pd.Series(0.0, index=prices.index, dtype=float)
     requested_trades = pd.Series(0.0, index=prices.index, dtype=float)
@@ -285,8 +367,8 @@ def backtest(
     participation = pd.Series(0.0, index=prices.index, dtype=float)
     capacity_constrained = pd.Series(False, index=prices.index, dtype=bool)
     borrow_blocked = pd.Series(False, index=prices.index, dtype=bool)
-    previous_target = 0.0
     nav = float(initial_capital)
+    asset_value = 0.0
     insolvent = False
 
     # A small stateful ledger is intentional.  Target positions are portfolio
@@ -302,19 +384,16 @@ def backtest(
             continue
 
         asset_return = float(returns.iloc[i])
-        fraction = float(elapsed_years.iloc[i])
-        held = previous_target
+        held = asset_value / nav
         long_exposure = max(held, 0.0)
         short_exposure = max(-held, 0.0)
         base_cash = max(1.0 - long_exposure, 0.0)
         borrowed_exposure = max(abs(held) - 1.0, 0.0)
 
-        cash_pnl = base_cash * _period_rate(float(cash_rates.iloc[i]), fraction)
-        rebate_pnl = short_exposure * _period_rate(float(short_rebate_rates.iloc[i]), fraction)
-        financing_cost = borrowed_exposure * _period_rate(
-            float(financing_rates.iloc[i] + financing_spreads.iloc[i]), fraction
-        )
-        borrow_cost = short_exposure * _period_rate(float(borrow_rates.iloc[i]), fraction)
+        cash_pnl = base_cash * float(cash_accruals.iloc[i])
+        rebate_pnl = short_exposure * float(short_rebate_accruals.iloc[i])
+        financing_cost = borrowed_exposure * float(financing_accruals.iloc[i] + financing_spread_accruals.iloc[i])
+        borrow_cost = short_exposure * float(borrow_accruals.iloc[i])
         pre_trade_return = held * asset_return + cash_pnl + rebate_pnl - financing_cost - borrow_cost
         if not np.isfinite(pre_trade_return):
             raise ValueError("backtest return exceeds numerical range; review input scales and rates")
@@ -329,42 +408,47 @@ def backtest(
             period_return = -1.0
             insolvent = True
         else:
-            drifted_weight = held * (1.0 + asset_return) / pre_trade_factor
             if desired < 0.0 and not bool(borrow_schedule.iloc[i]):
                 desired = 0.0
                 borrow_blocked.iloc[i] = True
 
-            requested_turnover = abs(desired - drifted_weight)
-            requested_trades.iloc[i] = requested_turnover
-            turnover = requested_turnover
             pre_trade_nav = nav * pre_trade_factor
             if not np.isfinite(pre_trade_nav) or pre_trade_nav <= 0:
                 raise ValueError("backtest NAV exceeds numerical range")
 
-            if liquidity_enabled and requested_turnover > 0.0:
-                dollar_volume = float(prices.iloc[i]) * float(volumes.iloc[i])
+            pre_trade_asset = asset_value * (1.0 + asset_return)
+            dollar_volume = float(prices.iloc[i]) * float(volumes.iloc[i])
+            current_spread = float(spreads.iloc[i])
+
+            def cost_function(amount, bar_volume=dollar_volume, spread=current_spread):
+                return _execution_cost_dollars(
+                    amount,
+                    bar_volume,
+                    cost_bps,
+                    slippage_bps,
+                    spread,
+                    impact_bps,
+                    impact_exponent,
+                    impact_reference_participation,
+                    min_fee,
+                )
+
+            requested_trade_dollars = _target_trade_dollars(pre_trade_asset, pre_trade_nav, desired, cost_function)
+            requested_dollars = abs(requested_trade_dollars)
+            requested_turnover = requested_dollars / pre_trade_nav
+            requested_trades.iloc[i] = requested_turnover
+            traded_dollars = requested_dollars
+            if liquidity_enabled and requested_dollars > 0.0:
                 participation_limit = max_participation if max_participation is not None else 1.0
                 max_trade_dollars = max(dollar_volume * participation_limit, 0.0)
-                requested_dollars = requested_turnover * pre_trade_nav
                 traded_dollars = min(requested_dollars, max_trade_dollars)
-                turnover = traded_dollars / pre_trade_nav
                 participation.iloc[i] = traded_dollars / dollar_volume if dollar_volume > 0.0 else 0.0
                 capacity_constrained.iloc[i] = traded_dollars + 1e-12 < requested_dollars
-
-            direction = float(np.sign(desired - drifted_weight))
-            filled_weight = drifted_weight + direction * turnover
-            filled_positions.iloc[i] = filled_weight
-
-            commission_dollars = turnover * pre_trade_nav * cost_bps / 10000.0
-            if turnover > 0.0:
-                commission_dollars = max(commission_dollars, min_fee)
-            impact_cost_bps = 0.0
-            if turnover > 0.0 and impact_bps > 0.0:
-                relative_participation = participation.iloc[i] / impact_reference_participation
-                impact_cost_bps = impact_bps * relative_participation**impact_exponent
-            execution_cost_bps = slippage_bps + float(spreads.iloc[i]) / 2.0 + impact_cost_bps
-            execution_cost_dollars = turnover * pre_trade_nav * execution_cost_bps / 10000.0
-            transaction_cost = (commission_dollars + execution_cost_dollars) / nav
+            trade_dollars = float(np.sign(requested_trade_dollars)) * traded_dollars
+            turnover = traded_dollars / pre_trade_nav
+            execution_cost_dollars = cost_function(traded_dollars)
+            asset_value = pre_trade_asset + trade_dollars
+            transaction_cost = execution_cost_dollars / nav
             if not np.isfinite(transaction_cost):
                 raise ValueError("backtest transaction costs exceed numerical range")
             transaction_costs.iloc[i] = transaction_cost
@@ -378,7 +462,10 @@ def backtest(
         nav *= 1.0 + period_return
         if not np.isfinite(nav) or (nav <= 0 and not insolvent):
             raise ValueError("backtest NAV exceeds numerical range")
-        previous_target = 0.0 if insolvent else filled_positions.iloc[i]
+        if insolvent:
+            asset_value = 0.0
+        else:
+            filled_positions.iloc[i] = asset_value / nav
 
     equity = (1.0 + strategy_returns).cumprod().clip(lower=0.0)
     if not np.isfinite(equity.to_numpy()).all():
@@ -453,14 +540,16 @@ def evaluate(
     ann = annualization
     mean_ret = returns.mean()
     std_ret = returns.std() if len(returns) >= 2 else 0.0
-    downside_std = returns[returns < 0].std()
-    if pd.isna(downside_std):
-        downside_std = 0.0
+    minimum_acceptable_return = risk_free_rate / ann
+    downside = np.minimum(returns.to_numpy(dtype=float) - minimum_acceptable_return, 0.0)
+    downside_deviation = float(np.sqrt(np.mean(np.square(downside))))
 
     # Keep legacy zero sentinels for undefined ratios, but never erase actual
     # gain/loss, drawdown or CAGR merely because variance is zero or n == 1.
     sharpe = (mean_ret * ann - risk_free_rate) / (std_ret * np.sqrt(ann) + 1e-10) if std_ret >= 1e-10 else 0.0
-    sortino = (mean_ret * ann - risk_free_rate) / (downside_std * np.sqrt(ann) + 1e-10) if std_ret >= 1e-10 else 0.0
+    sortino = (
+        (mean_ret * ann - risk_free_rate) / (downside_deviation * np.sqrt(ann)) if downside_deviation >= 1e-10 else 0.0
+    )
 
     equity = (1 + returns).cumprod()
     # Anchor the peak at initial capital 1.0 so first-bar entry costs count as

@@ -193,10 +193,10 @@ def run_benchmarks(*, repeats: int = 1, measure_resources: bool = True) -> dict:
 
 def load_benchmark_reference() -> dict:
     """Load reviewed references shipped inside both source and wheel installs."""
-    reference = json.loads(_assets().joinpath("reference_v1.json").read_text(encoding="utf-8"))
+    reference = json.loads(_assets().joinpath("reference_v2.json").read_text(encoding="utf-8"))
     results = {}
     for dataset in reference["suite"]["datasets"]:
-        fragment = json.loads(_assets().joinpath(f"expected_{dataset['id']}_v1.json").read_text(encoding="utf-8"))
+        fragment = json.loads(_assets().joinpath(f"expected_{dataset['id']}_v2.json").read_text(encoding="utf-8"))
         if set(results) & set(fragment):
             raise ValueError("Duplicate cases in packaged benchmark reference")
         results.update(fragment)

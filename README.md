@@ -99,6 +99,18 @@ distributed lease or tamper-proof signature. Research access history and explici
 reveal/reuse consent are unchanged. Upgrade with new runs/protocols; old
 source/version-locked research still needs its original environment.
 
+## v0.17.0 accounting and determinism fixes
+
+Single-asset execution now preserves currency holdings and solves target weights
+after costs, so NAV, turnover and reported positions reconcile exactly. Dated
+annual rates take effect at their own timestamps and are integrated across gaps.
+Sortino uses a full-sample lower partial second moment, while PBO uses average
+ranks over `N + 1`. Search ties have a canonical total order independent of
+worker arrival and `top_n`. Market-data caches now store one hash-bound complete
+adjusted-price snapshot instead of merging responses or inferring coverage from
+date extrema. These changes require new runs under engine schema 6; old frozen
+references and source-locked studies remain retained for auditability.
+
 ## v0.14.1 integrity fixes
 
 Fixed symbolic-ticker cache collisions and CSV precision drift, constant-return
@@ -315,8 +327,9 @@ Memory means `tracemalloc` peak allocation, not total process RSS. See
 - The execution model supports quoted bid/ask spread, nonlinear
   participation-based impact, starting NAV, and minimum currency fees.
 - Cash, financing, financing-spread, borrow-fee, collateral-rebate, and borrow
-  availability inputs can be dated pandas Series. Values are forward-filled
-  from information already known; future observations are never backfilled.
+  availability inputs can be dated pandas Series. Rate changes are effective at
+  their timestamps and integrated over elapsed ACT/365.25 time; availability is
+  forward-filled from information already known. Future values are never backfilled.
 - Backtest output exposes requested and filled turnover, actual filled
   positions, transaction costs, participation, capacity constraints, and
   borrow blocks. Search metrics use the actual filled path.
@@ -473,8 +486,9 @@ print(simulation["capacity_constrained"].sum(), "capacity-constrained bars")
 ```
 
 For historical funding or borrow conditions, pass a sorted pandas Series whose
-first observation covers the first price bar. Sparse schedules are
-forward-filled only:
+first observation covers the first price bar. Each value becomes effective at
+its timestamp; changes between price bars apply only to the remaining portion
+of that ACT/365.25 interval:
 
 ```python
 cash_curve = pd.Series([0.01, 0.05], index=pd.to_datetime(["2020-01-01", "2022-03-17"]))

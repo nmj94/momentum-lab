@@ -85,7 +85,7 @@ jobs:
           uv venv .wheel-venv
           uv pip install --python .wheel-venv/bin/python dist/*.whl
           .wheel-venv/bin/momentum-lab --version
-          .wheel-venv/bin/python -c "import momentum_lab; assert momentum_lab.__version__ == '0.16.0'"
+          .wheel-venv/bin/python -c "import momentum_lab; assert momentum_lab.__version__ == '0.17.0'"
       - name: Verify packaged frozen fixtures outside the source checkout
         run: |
           wheel_python="$GITHUB_WORKSPACE/.wheel-venv/bin/python"

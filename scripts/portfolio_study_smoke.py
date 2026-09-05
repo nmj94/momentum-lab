@@ -18,7 +18,7 @@ from momentum_lab import PortfolioStudyRegistry, StudyRegistry
 
 def main():
     assert "site-packages" in Path(momentum_lab.__file__).resolve().parts, "smoke must use the installed wheel"
-    assert momentum_lab.__version__ == "0.16.0"
+    assert momentum_lab.__version__ == "0.17.0"
     assert importlib.util.find_spec("sklearn") is None, "portfolio study core must not require optional ML"
     with tempfile.TemporaryDirectory(prefix="momentum-portfolio-study-smoke-") as folder:
         root = Path(folder)

@@ -111,11 +111,19 @@ The command has no automatic rebaseline option and cannot replace bundled data.
 
 ## Reference-review and release policy
 
-The v1 expected ledgers were captured with the v0.9.0 harness using the unchanged
+The retained v1 expected ledgers were captured with the v0.9.0 harness using the unchanged
 v0.8.0 accounting engine (schema 5). The reference records the engine's GitHub
 base commit as well as the harness source hash. v0.9.0 does not change strategy,
 accounting or search-selection semantics. Existing checkpoints still undergo the normal source-fingerprint
 compatibility check; this does not promise resume across package upgrades.
+
+The active v2 expected ledgers were reviewed for v0.17.0 / engine schema 6.
+They intentionally differ because target positions are now post-cost weights
+backed by an explicit currency asset ledger, and Sortino uses lower partial
+second moment over every observation. The v1 suite and expected files remain
+packaged as the pre-fix compatibility record. Independent Fraction-based
+two-bar accounting, calendar-rate integration and metric formula tests guard
+the changed semantics; v2 was not accepted on the basis of improved returns.
 
 Golden files alone can preserve an old bug. Tests therefore also use independent
 cash-accrual and buy-and-hold entry-price oracles, prefix-causality checks, cached

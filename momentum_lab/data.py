@@ -1,5 +1,6 @@
 """data.py - Download market data for any ticker."""
 
+import hashlib
 import json
 import os
 import re
@@ -20,7 +21,7 @@ from .artifacts import atomic_text_output
 DATA_DIR = Path(os.environ.get("MOMENTUM_LAB_DATA_DIR", user_cache_dir("momentum-lab")))
 DOWNLOAD_ATTEMPTS = 3
 DOWNLOAD_BACKOFF_SECONDS = 0.5
-CACHE_SCHEMA_VERSION = 1
+CACHE_SCHEMA_VERSION = 2
 
 # Yahoo tickers are alphanumeric plus a small symbol set (BRK-B, RDS.A,
 # ^GSPC, EURUSD=X).  Anything else (notably URL-significant characters such
@@ -87,11 +88,23 @@ def _range_boundaries(start, end, continuous=False):
     return start_boundary, end_boundary
 
 
-def _cache_covers_range(df, start, end, continuous=False, earliest_available=None):
+def _cache_covers_range(
+    df,
+    start,
+    end,
+    continuous=False,
+    earliest_available=None,
+    coverage_start=None,
+    coverage_end=None,
+):
     """Return whether a cached frame fully covers the requested date range."""
     if df is None or df.empty:
         return False
     start_boundary, end_boundary = _range_boundaries(start, end, continuous=continuous)
+    if coverage_start is not None and pd.Timestamp(coverage_start) > pd.Timestamp(start):
+        return False
+    if end is not None and coverage_end is not None and pd.Timestamp(coverage_end) < pd.Timestamp(end):
+        return False
     # Allow a small start gap for exchange holidays that are not represented
     # by pandas' generic business-day offset, but never accept a truncated end.
     tolerance = pd.Timedelta(days=7)
@@ -125,12 +138,17 @@ def _load_cache_metadata(cache_path, ticker):
             or metadata.get("ticker") != ticker
         ):
             raise ValueError("schema or ticker identity mismatch")
-        for name in ("earliest_available", "latest_available", "requested_start"):
+        for name in ("earliest_available", "latest_available", "coverage_start", "coverage_end"):
             value = metadata.get(name)
             if value is not None:
                 if not isinstance(value, str):
                     raise ValueError(f"invalid {name}")
                 _daily_bound(value, name)
+        digest = metadata.get("data_sha256")
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise ValueError("invalid data_sha256")
+        if hashlib.sha256(cache_path.read_bytes()).hexdigest() != digest:
+            raise ValueError("cache data and metadata snapshot mismatch")
     except (OSError, ValueError, TypeError, RecursionError) as exc:
         warnings.warn(f"Ignoring invalid cache metadata {path}: {exc}", RuntimeWarning)
         return None  # Invalid identity must invalidate prices too, not merely coverage hints.
@@ -232,25 +250,40 @@ def download_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True):
     if cache_metadata is None:
         cached, cache_metadata = None, {}
     earliest_available = cache_metadata.get("earliest_available")
+    coverage_start = cache_metadata.get("coverage_start")
+    coverage_end = cache_metadata.get("coverage_end")
     if cached is not None and _cache_covers_range(
         cached,
         start,
         end,
         continuous=continuous,
         earliest_available=earliest_available,
+        coverage_start=coverage_start,
+        coverage_end=coverage_end,
     ):
         return _slice_range(cached, start, end)
-    # A partial cache must not be returned silently.  Refresh the requested
-    # window and merge it with the existing cache after a successful download.
+    # Refresh one complete union window. Adjusted prices are snapshot-relative,
+    # so rows from separate provider responses must never be spliced together.
+    provider_start_ts = start_ts
+    if coverage_start is not None:
+        provider_start_ts = min(provider_start_ts, pd.Timestamp(coverage_start))
+    provider_request_end = end_ts
+    if coverage_end is None and cache_metadata and end_ts is not None:
+        provider_request_end = None
+    elif coverage_end is not None:
+        provider_request_end = max(end_ts, pd.Timestamp(coverage_end)) if end_ts is not None else None
 
     # yfinance defines ``end`` as exclusive while this API promises an
     # inclusive [start, end] range. Ask the provider for one extra calendar day.
-    provider_end = str((end_ts + pd.Timedelta(days=1)).date()) if end_ts is not None else None
+    provider_start = str(provider_start_ts.date())
+    provider_end = (
+        str((provider_request_end + pd.Timedelta(days=1)).date()) if provider_request_end is not None else None
+    )
     df = None
     last_error = None
     for attempt in range(DOWNLOAD_ATTEMPTS):
         try:
-            candidate = yf.download(ticker, start=start, end=provider_end, auto_adjust=True, progress=False)
+            candidate = yf.download(ticker, start=provider_start, end=provider_end, auto_adjust=True, progress=False)
             if candidate is not None and not candidate.empty:
                 df = candidate
                 break
@@ -262,7 +295,13 @@ def download_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True):
     if df is None and last_error is not None:
         # Temporary failure (e.g. Yahoo rate limit). Fall back to cached data.
         if cached is not None and _cache_covers_range(
-            cached, start, end, continuous=continuous, earliest_available=earliest_available
+            cached,
+            start,
+            end,
+            continuous=continuous,
+            earliest_available=earliest_available,
+            coverage_start=coverage_start,
+            coverage_end=coverage_end,
         ):
             warnings.warn(f"Download failed ({last_error}); falling back to cached data.", RuntimeWarning)
             return _slice_range(cached, start, end)
@@ -270,7 +309,13 @@ def download_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True):
 
     if df is None or df.empty:
         if cached is not None and _cache_covers_range(
-            cached, start, end, continuous=continuous, earliest_available=earliest_available
+            cached,
+            start,
+            end,
+            continuous=continuous,
+            earliest_available=earliest_available,
+            coverage_start=coverage_start,
+            coverage_end=coverage_end,
         ):
             warnings.warn("Download returned no data; falling back to cached data.", RuntimeWarning)
             return _slice_range(cached, start, end)
@@ -302,12 +347,6 @@ def download_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True):
     if df.empty or "close" not in df.columns:
         raise ValueError(f"Download for '{ticker}' returned no usable data.")
 
-    if use_cache and cached is not None:
-        # Keep previously downloaded history instead of overwriting it
-        # with the newly requested window.
-        df = pd.concat([cached, df]).sort_index()
-        df = df[~df.index.duplicated(keep="last")]
-
     _validate_ohlcv(df, ticker)
 
     # The provider may return a narrower range than requested (for example
@@ -318,14 +357,14 @@ def download_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True):
     # BTC-USD 2014) and we cannot distinguish that from a provider gap
     # locally, so downgrade it to a warning.  Validate BEFORE persisting so
     # a rejected window never contaminates the cache.
-    start_boundary, end_boundary = _range_boundaries(start, end, continuous=continuous)
+    start_boundary, end_boundary = _range_boundaries(provider_start, provider_request_end, continuous=continuous)
     if df.index.max() < end_boundary:
         raise ValueError(f"Downloaded data for '{ticker}' does not cover the requested range.")
     late_start = df.index.min() > start_boundary + pd.Timedelta(days=7)
     if late_start:
         warnings.warn(
             f"Data for '{ticker}' starts at {df.index.min().date()}, later than the requested "
-            f"start {pd.Timestamp(start).date()}; treating it as the earliest available history.",
+            f"start {provider_start_ts.date()}; treating it as the earliest available history.",
             RuntimeWarning,
         )
 
@@ -341,8 +380,10 @@ def download_data(ticker="GLD", start="2004-01-01", end=None, use_cache=True):
                 "schema_version": CACHE_SCHEMA_VERSION,
                 "ticker": ticker,
                 "earliest_available": confirmed_earliest,
-                "requested_start": str(start_ts),
+                "coverage_start": str(provider_start_ts),
+                "coverage_end": str(provider_request_end) if provider_request_end is not None else None,
                 "latest_available": str(df.index.max()),
+                "data_sha256": hashlib.sha256(cache_path.read_bytes()).hexdigest(),
             },
             cache_path,
         )

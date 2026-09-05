@@ -3,6 +3,30 @@
 All notable changes are documented here. The project follows semantic versioning
 for its public Python API and run/checkpoint schema.
 
+## [0.17.0] - 2026-09-05
+
+### Accounting, cache and statistical correctness
+
+- Replace weight-only single-asset state with a self-financing currency ledger.
+  Solve trades against post-cost NAV, then apply participation limits to actual
+  notional so reported positions, fees, turnover and holdings reconcile.
+- Treat dated annual rates as effective at their timestamps and integrate them
+  piecewise over ACT/365.25 gaps. Replace the Sortino denominator with the
+  full-sample lower partial second moment around the per-period risk-free target.
+- Replace extrema-based market-data cache coverage with hash-bound request scope.
+  Refresh one complete union window and never splice adjusted-price snapshots
+  from different provider responses.
+- Canonically order search candidates and ties independently of worker arrival
+  and `top_n`. Use average out-of-sample ranks divided by `N + 1` for the
+  fold-score PBO diagnostic, and report fully degenerate comparisons unavailable.
+- Add six focused audit regressions, including an independent Fraction ledger
+  oracle, and activate reviewed v2 expected ledgers while retaining every v1 file.
+
+Compatibility: package 0.17.0 uses engine/checkpoint schema 6 and cache schema 2.
+Prior registered studies remain source/version locked and require their original
+environment; start a new run and study after upgrading. Cache v1 is safely
+refreshed. Portfolio, study, run-state, registry and backup schemas are unchanged.
+
 ## [0.16.0] - 2026-09-04
 
 ### Private run/registry recovery bundles

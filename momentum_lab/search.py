@@ -3,7 +3,6 @@
 import copy
 import csv
 import hashlib
-import heapq
 import importlib.metadata
 import importlib.util
 import json
@@ -16,7 +15,7 @@ import warnings
 from collections import OrderedDict
 from contextlib import closing
 from datetime import datetime, timezone
-from itertools import combinations, count
+from itertools import combinations
 from numbers import Real
 from pathlib import Path
 from statistics import NormalDist
@@ -48,7 +47,7 @@ except ImportError:
 
 
 RESULT_DIR = Path("experiments")
-ENGINE_SCHEMA_VERSION = 5
+ENGINE_SCHEMA_VERSION = 6
 METRIC_KEYS = (
     "sharpe",
     "sortino",
@@ -546,7 +545,7 @@ def _iter_result_store(path, batch_size=10_000):
     if not path.exists():
         return
     with closing(_open_result_store(path)) as connection:
-        cursor = connection.execute("SELECT * FROM results ORDER BY rowid")
+        cursor = connection.execute("SELECT * FROM results ORDER BY strategy, params")
         while True:
             rows = cursor.fetchmany(batch_size)
             if not rows:
@@ -1095,7 +1094,7 @@ def _sharpe_confidence_interval(metrics, annualization, confidence_z=1.959963984
 
 
 def _estimate_pbo(fold_rows):
-    """Estimate CSCV Probability of Backtest Overfitting from validation folds."""
+    """Estimate approximate CSCV PBO from fold scores using average OOS ranks."""
     if len(fold_rows) < 2:
         return None
     matrix = np.asarray(fold_rows, dtype=float)
@@ -1108,9 +1107,17 @@ def _estimate_pbo(fold_rows):
         in_scores = matrix[:, in_sample_columns].mean(axis=1)
         selected = int(np.argmax(in_scores))
         out_scores = matrix[:, out_sample_columns].mean(axis=1)
-        percentile = float((out_scores <= out_scores[selected]).mean())
+        if np.ptp(out_scores) <= 1e-15:
+            continue
+        selected_score = out_scores[selected]
+        lower = float((out_scores < selected_score).sum())
+        tied = float((out_scores == selected_score).sum())
+        average_rank = lower + (tied + 1.0) / 2.0
+        percentile = average_rank / (len(out_scores) + 1.0)
         percentile = min(max(percentile, 1e-9), 1 - 1e-9)
         logits.append(math.log(percentile / (1 - percentile)))
+    if not logits:
+        return None
     return {
         "probability": float((np.asarray(logits) <= 0).mean()),
         "combinations": len(logits),
@@ -1169,8 +1176,7 @@ def _select_from_store(
     trial_count = max(len(valid_sharpes), int(trial_count_override or 0))
     hurdle = _multiple_testing_hurdle(sharpe_std, trial_count)
 
-    heap = []
-    sequence = count()
+    top = []
     eligible_count = 0
     fold_rows = []
     for result in _iter_result_store(store_path):
@@ -1190,14 +1196,20 @@ def _select_from_store(
             "validation_fold_worst": min(folds) if folds else None,
         }
         if len(folds) == validation_folds:
-            fold_rows.append(folds)
-        entry = (probability, float(metrics.get("sharpe", -99)), next(sequence), result)
-        if len(heap) < top_n:
-            heapq.heappush(heap, entry)
-        elif entry[:2] > heap[0][:2]:
-            heapq.heapreplace(heap, entry)
+            fold_rows.append((result["strategy"], _canonical_params(result.get("params", {})), folds))
+        ranking_key = (
+            -probability,
+            -float(metrics.get("sharpe", -99)),
+            result["strategy"],
+            _canonical_params(result.get("params", {})),
+        )
+        top.append((ranking_key, result))
+        top.sort(key=lambda item: item[0])
+        if len(top) > top_n:
+            top.pop()
 
-    top = [entry[3] for entry in sorted(heap, key=lambda item: (-item[0], -item[1]))]
+    top = [entry[1] for entry in top]
+    ordered_fold_rows = [entry[2] for entry in sorted(fold_rows, key=lambda item: item[:2])]
     diagnostics = {
         "selection_metric": "deflated_sharpe_probability",
         "trials": trial_count,
@@ -1206,8 +1218,8 @@ def _select_from_store(
         "observed_sharpe_std": sharpe_std,
         "sharpe_std_source": "initial_halving_stage" if use_override else "full_development",
         "multiple_testing_sharpe_hurdle": hurdle,
-        "pbo": _estimate_pbo(fold_rows),
-        "walk_forward_selection": _walk_forward_selection_diagnostic(fold_rows),
+        "pbo": _estimate_pbo(ordered_fold_rows),
+        "walk_forward_selection": _walk_forward_selection_diagnostic(ordered_fold_rows),
     }
     return top, diagnostics
 
@@ -1784,7 +1796,7 @@ def run_search(
             protocol.update(
                 {
                     "periods": metadata["periods"],
-                    "selection_rule": "deflated_sharpe_probability_v1",
+                    "selection_rule": "deflated_sharpe_probability_canonical_ties_v2",
                     "split_rule": "ordered_40_40_20_v1",
                     "strategy_space": {
                         name: _jsonable(

@@ -208,6 +208,21 @@ storage, licensed input snapshots and compatible source/environment capsules.
 Active migration needs a separately designed monotonic history-merge protocol;
 an older registry with the same UUID must never replace newer observations.
 
+## v0.17 — Accounting and statistical integrity
+
+Delivered in v0.17.0:
+
+- Self-financing single-asset execution with post-cost target solving and
+  currency-consistent partial fills, fees, NAV and reported weights.
+- Effective-dated ACT/365.25 rate integration, corrected Sortino downside
+  deviation, canonical candidate ties and corrected fold-score PBO ranks.
+- Complete hash-bound adjusted-price cache snapshots with explicit request
+  scope, plus retained v1 and reviewed v2 accounting regressions.
+
+Next priorities remain point-in-time licensed data, portfolio liquidity and
+multi-asset selection. Existing source-locked studies are intentionally not
+migrated across the accounting boundary.
+
 ## v1.0 — Stable research platform
 
 - Stable public API and migration policy.

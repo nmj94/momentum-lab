@@ -59,7 +59,7 @@ def test_buy_and_hold_matches_independent_entry_and_price_ratio(snapshot):
     frame = bench._load_frame(dataset)
     # No position until the next close: first earn one calendar day's cash,
     # then pay 1 bp commission + 0.5 bp slippage + half of the 2 bp spread.
-    entry = (1 + 0.02 / 365.25) * (1 - 2.5 / 10000)
+    entry = (1 + 0.02 / 365.25) / (1 + 2.5 / 10000)
     expected = np.r_[1.0, entry * frame["close"].iloc[1:].to_numpy() / frame["close"].iloc[1]]
     actual = snapshot["results"]["equity_trend/buy_and_hold"]["ledger"]["equity"]
     np.testing.assert_allclose(actual, expected, rtol=1e-12, atol=1e-12)

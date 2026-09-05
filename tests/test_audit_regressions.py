@@ -4,6 +4,7 @@ import json
 import sqlite3
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from fractions import Fraction
 from pathlib import Path
 from threading import Barrier
 
@@ -60,6 +61,34 @@ def test_constant_returns_retain_realized_performance(rate):
     assert result["sharpe"] == 0.0  # Legacy undefined-ratio sentinel, not evidence of no gain/loss.
 
 
+def test_single_asset_cost_ledger_matches_independent_fraction_oracle():
+    result = backtest(
+        pd.Series([0.5, 0.5]),
+        pd.Series([100.0, 200.0]),
+        cost_bps=1000.0,
+        initial_capital=100.0,
+    )
+    first_trade = Fraction(50, 1) / Fraction(105, 100)
+    first_fee = first_trade / 10
+    first_nav = Fraction(100, 1) - first_fee
+    pre_trade_asset = first_trade * 2
+    pre_trade_nav = first_nav + first_trade
+    second_trade = (pre_trade_asset - pre_trade_nav / 2) / Fraction(95, 100)
+    second_fee = second_trade / 10
+    final_nav = pre_trade_nav - second_fee
+    expected_equity = [float(first_nav / 100), float(final_nav / 100)]
+    expected_trades = [float(first_trade / 100), float(second_trade / pre_trade_nav)]
+    np.testing.assert_allclose(result["equity"], expected_equity, rtol=1e-13, atol=1e-13)
+    np.testing.assert_allclose(result["trades"], expected_trades, rtol=1e-13, atol=1e-13)
+    np.testing.assert_allclose(result["positions"], [0.5, 0.5], rtol=1e-13, atol=1e-13)
+
+
+def test_sortino_uses_full_sample_lower_partial_second_moment():
+    returns = pd.Series([0.02, -0.01, 0.02, -0.01])
+    expected = returns.mean() * 252 / (np.sqrt(np.mean(np.minimum(returns, 0) ** 2)) * np.sqrt(252))
+    assert evaluate(returns)["sortino"] == pytest.approx(round(expected, 4))
+
+
 @pytest.mark.parametrize("value", [-1.0, -0.1, 0.1])
 def test_single_return_is_not_reported_as_no_change(value):
     result = evaluate(pd.Series([value]), annualization=1)
@@ -103,6 +132,42 @@ def test_cache_roundtrip_preserves_exact_snapshot(tmp_path, monkeypatch):
     cached = data.download_data("GLD", "2024-01-02", "2024-01-04")
     pd.testing.assert_frame_equal(fresh, cached, check_exact=True, check_freq=False)
     assert search._data_snapshot(fresh) == search._data_snapshot(cached)
+
+
+def test_cache_refreshes_complete_union_instead_of_accepting_disjoint_extrema(tmp_path, monkeypatch):
+    monkeypatch.setattr(data, "DATA_DIR", tmp_path)
+    calls = []
+
+    def download(ticker, start, end, **kwargs):
+        calls.append((start, end))
+        index = pd.date_range(start, pd.Timestamp(end) - pd.Timedelta(days=1), freq="B")
+        return pd.DataFrame({name: 100.0 for name in ("Open", "High", "Low", "Close")}, index=index)
+
+    monkeypatch.setattr(data.yf, "download", download)
+    data.download_data("GLD", "2024-01-02", "2024-01-05")
+    data.download_data("GLD", "2024-02-01", "2024-02-05")
+    combined = data.download_data("GLD", "2024-01-02", "2024-02-05")
+    assert calls == [("2024-01-02", "2024-01-06"), ("2024-01-02", "2024-02-06")]
+    assert len(combined) == len(pd.date_range("2024-01-02", "2024-02-05", freq="B"))
+
+
+def test_cache_never_splices_different_adjusted_price_snapshots(tmp_path, monkeypatch):
+    monkeypatch.setattr(data, "DATA_DIR", tmp_path)
+    calls = 0
+
+    def download(ticker, start, end, **kwargs):
+        nonlocal calls
+        calls += 1
+        index = pd.date_range(start, pd.Timestamp(end) - pd.Timedelta(days=1), freq="B")
+        price = 100.0 if calls == 1 else 50.0
+        return pd.DataFrame({name: price for name in ("Open", "High", "Low", "Close")}, index=index)
+
+    monkeypatch.setattr(data.yf, "download", download)
+    data.download_data("GLD", "2024-01-02", "2024-01-05")
+    refreshed = data.download_data("GLD", "2024-01-04", "2024-01-09")
+    assert calls == 2
+    assert refreshed["close"].eq(50.0).all()
+    assert data.download_data("GLD", "2024-01-02", "2024-01-09")["close"].pct_change().dropna().eq(0).all()
 
 
 @pytest.mark.parametrize("change", [{"ticker": "SPY"}, {"earliest_available": "not-a-date"}])
@@ -169,6 +234,44 @@ def test_next_open_sensitivity_uses_the_selected_execution_prices(monkeypatch):
     assert result["baseline"] == expected
     close_result = robustness_check(market, frame, periods, "tsmom", params, min_neighbors=0, backtest_kwargs=options)
     assert close_result["baseline"] != expected
+
+
+def test_selection_winner_is_canonical_and_independent_of_top_n(tmp_path):
+    store = tmp_path / "results.sqlite3"
+    scores = [0.5, 0.5, 0.5, 0.5, 2.0, 2.0]
+    rows = []
+    for lookback, score in enumerate(scores, start=1):
+        rows.append(
+            {
+                "strategy": "tsmom",
+                "params": {"lookback": lookback},
+                "val_metrics": {
+                    "sharpe": score,
+                    "n_observations": 100,
+                    "trade_count": 5,
+                    "exposure": 1.0,
+                    "skew": 0.0,
+                    "kurtosis": 0.0,
+                },
+                "val_fold_sharpes": [score] * 4,
+            }
+        )
+    search._store_results(list(reversed(rows)), store)
+    winners = []
+    for top_n in range(1, 7):
+        top, _ = search._select_from_store(store, top_n, 252, 10, 1, 0.0, 4)
+        winners.append(top[0]["params"]["lookback"])
+    assert winners == [5] * 6
+
+
+def test_pbo_uses_rank_over_candidates_plus_one_and_average_ties():
+    matrix = [
+        [0.5340480117466833, -0.3422113391711389, 0.9420051629320243, -0.22741178874833157],
+        [0.48086919964163594, 0.06835248809298967, 1.3765017359345508, -1.9880504476231626],
+        [0.2810135868916018, 1.084615316415709, -0.8183364546506636, 0.23113093407581842],
+    ]
+    assert search._estimate_pbo(matrix)["probability"] == 1.0
+    assert search._estimate_pbo([[1.0] * 4, [1.0] * 4]) is None
 
 
 def test_search_forwards_next_open_execution_to_sensitivity(tmp_path, monkeypatch):

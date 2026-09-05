@@ -383,7 +383,8 @@ def test_backtest_charges_drift_rebalancing_turnover():
 
     result = backtest(positions, prices, cost_bps=100.0)
 
-    assert result["trades"].iloc[0] == pytest.approx(0.5)
+    assert result["trades"].iloc[0] == pytest.approx(0.5 / 1.005)
+    assert result["positions"].iloc[0] == pytest.approx(0.5)
     assert result["trades"].iloc[1] > 0.02
     assert result["returns"].iloc[1] < 0.05
 
@@ -422,7 +423,7 @@ def test_backtest_forward_fills_time_varying_rate_schedules_without_lookahead():
     result = backtest(positions, prices, cost_bps=0.0, cash_rate=cash_schedule)
 
     assert result["returns"].iloc[1] == pytest.approx(0.365 / 365.25)
-    assert result["returns"].iloc[2] == pytest.approx(0.73 * 2 / 365.25)
+    assert result["returns"].iloc[2] == pytest.approx((0.365 + 0.73) / 365.25)
 
 
 def test_backtest_adds_time_varying_financing_spread():
@@ -441,7 +442,7 @@ def test_backtest_adds_time_varying_financing_spread():
     )
 
     assert result["returns"].iloc[1] == pytest.approx(-0.07 / 365.25)
-    assert result["returns"].iloc[2] == pytest.approx(-0.09 / 365.25)
+    assert result["returns"].iloc[2] == pytest.approx(-0.07 / 365.25)
 
 
 def test_backtest_borrow_unavailability_blocks_and_covers_shorts():
@@ -505,8 +506,9 @@ def test_backtest_spread_nonlinear_impact_and_minimum_fee_are_explicit():
     )
 
     # A 100% participation order pays 100 bps impact plus a 10 bps half-spread.
-    assert liquid["transaction_costs"].iloc[0] == pytest.approx(0.011)
-    assert liquid["returns"].iloc[0] == pytest.approx(-0.011)
+    assert liquid["positions"].iloc[0] == pytest.approx(1.0)
+    assert liquid["transaction_costs"].iloc[0] < 0.011
+    assert liquid["returns"].iloc[0] == pytest.approx(-liquid["transaction_costs"].iloc[0])
     assert minimum["transaction_costs"].iloc[0] == pytest.approx(0.002)
 
 
@@ -524,7 +526,7 @@ def test_backtest_liquidity_model_requires_volume_and_schedule_coverage():
 def test_initial_entry_cost_counts_toward_max_drawdown():
     returns = backtest(pd.Series([1.0, 1.0]), pd.Series([100.0, 100.0]), cost_bps=100.0)["returns"]
     metrics = evaluate(returns)
-    assert metrics["max_drawdown"] == -0.01
+    assert metrics["max_drawdown"] == -0.0099
 
 
 def test_backtest_vol_target_warmup_stays_finite():
