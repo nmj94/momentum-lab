@@ -12,6 +12,7 @@ from .portfolio import PortfolioError, backtest_portfolio, cross_sectional_momen
 from .portfolio_governance import PortfolioStudyRegistry
 from .portfolio_research import PortfolioConfig, run_portfolio
 from .portfolio_study import PortfolioStudyConfig, run_portfolio_study
+from .preflight import preflight_dataset, preflight_portfolio, write_preflight_report
 from .reporting import render_html_report, render_markdown_report
 from .robustness import robustness_check
 from .run_control import RunBusyError, RunStateError, inspect_run
@@ -60,6 +61,8 @@ __all__ = [
     "load_search_config",
     "paired_block_bootstrap",
     "portfolio_metrics",
+    "preflight_dataset",
+    "preflight_portfolio",
     "prepare_data",
     "render_html_report",
     "render_markdown_report",
@@ -68,4 +71,5 @@ __all__ = [
     "run_portfolio",
     "run_portfolio_study",
     "run_search",
+    "write_preflight_report",
 ]

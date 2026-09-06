@@ -12,6 +12,7 @@ import io
 import json
 import math
 import re
+import sys
 import warnings
 from pathlib import Path
 
@@ -319,6 +320,11 @@ def import_dataset(
 
 def main(argv=None):
     """Dataset import and metadata-only inspection CLI; never uses a network."""
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == "check":
+        from .preflight import main as preflight_main
+
+        return preflight_main(argv[1:])
     parser = argparse.ArgumentParser(prog="momentum-lab data", description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     create = commands.add_parser("import", help="Validate a CSV and create a new immutable-by-convention snapshot")
@@ -336,6 +342,7 @@ def main(argv=None):
     create.add_argument("--dataset-id", help="Optional human-readable snapshot ID")
     inspect = commands.add_parser("inspect", help="Verify bytes/rows and print declarations, never strategy scores")
     inspect.add_argument("manifest")
+    commands.add_parser("check", help="Read-only date/integrity preflight; use data check --help")
     args = parser.parse_args(argv)
     try:
         if args.command == "import":

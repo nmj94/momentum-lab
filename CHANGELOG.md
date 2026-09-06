@@ -3,6 +3,31 @@
 All notable changes are documented here. The project follows semantic versioning
 for its public Python API and run/checkpoint schema.
 
+## [0.18.0] - 2026-09-06
+
+### Read-only offline data and portfolio preflight
+
+- Add `preflight_dataset`, `preflight_portfolio`, `write_preflight_report` and
+  `data check` / `portfolio preflight` CLI commands. Verify full input bytes/rows,
+  diagnose date gaps and compare portfolio declarations without strategy scoring,
+  network/cache access, registry writes or research reservations.
+- Add strict user-declared session calendars with bounded parsing, explicit coverage,
+  raw/canonical hashes and missing/unexpected date diagnostics. Unspecified exchange
+  calendars remain unknown; continuous calendars require every day.
+- Report every invalid asset, alignment/convention conflict, minimum-history failure,
+  possible duplicated CSV and optional membership error without echoing raw price
+  parsing failures. Keep bounded date samples and deterministic, portable report hashes.
+- Publish optional JSON/Markdown only to new directories. Distinguish passed (0),
+  review-warning (1) and error (2) CLI results. Add privacy, no-write, invalid-input,
+  resource-bound, interruption, cross-platform and installed-core regressions.
+
+Compatibility: additive preflight/report schema 1 and session-calendar schema 1.
+Accounting, engine schema 6, cache schema 2, dataset schema 1, portfolio/research
+governance and all 24 frozen ledgers are unchanged. Old source/version-locked
+research needs its original environment; reports are not migration or reveal
+authorization. No licensed historical data or verified point-in-time evidence is
+bundled. See [PREFLIGHT.md](PREFLIGHT.md).
+
 ## [0.17.0] - 2026-09-05
 
 ### Accounting, cache and statistical correctness

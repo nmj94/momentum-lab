@@ -58,6 +58,12 @@ Data commands return exit code `2` for invalid input and `0` on success.
 coverage, not price rows, strategy scores or an OOS assessment. It does not
 register a study or claim the underlying prices have never been viewed.
 
+v0.18 adds `momentum-lab data check manifest.json` for [read-only preflight](PREFLIGHT.md):
+structured date/gap diagnostics, optional declared session calendars and new-directory
+JSON/Markdown reports. Unlike `inspect`, `check` also returns exit 1 for warnings
+(such as unverified exchange-session completeness), 0 for pass and 2 for errors.
+It never outputs price values or calculates strategy performance.
+
 ## Data contract
 
 | Item | Contract |

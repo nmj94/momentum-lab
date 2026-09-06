@@ -8,6 +8,7 @@ import argparse
 import hashlib
 import json
 import sqlite3
+import sys
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, fields
 from datetime import datetime, timezone
@@ -423,6 +424,11 @@ def run_portfolio(config, *, acknowledge_history=False):
 
 
 def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == "preflight":
+        from .preflight import main as preflight_main
+
+        return preflight_main(argv[1:], portfolio=True)
     if argv and argv[0] == "study":
         from .portfolio_study import main as study_main
 
@@ -430,7 +436,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="momentum-lab portfolio",
         description=HISTORY_NOTICE,
-        epilog="Frozen software ledger check: momentum-lab portfolio benchmark. Registered workflow: momentum-lab portfolio study --help",
+        epilog="Data checks: momentum-lab portfolio preflight --config recipe.json. Frozen software ledger check: momentum-lab portfolio benchmark. Registered workflow: momentum-lab portfolio study --help",
     )
     if argv and argv[0] == "benchmark":
         parser.parse_args(argv[1:])

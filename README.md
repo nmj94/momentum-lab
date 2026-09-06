@@ -99,6 +99,26 @@ distributed lease or tamper-proof signature. Research access history and explici
 reveal/reuse consent are unchanged. Upgrade with new runs/protocols; old
 source/version-locked research still needs its original environment.
 
+## v0.18.0 read-only data preflight
+
+Check input integrity and date coverage before running strategies. New
+`data check` and `portfolio preflight` commands report missing/unexpected sessions,
+incompatible currency/calendar/adjustment declarations, possible duplicate inputs
+and membership problems. An optional declared session calendar makes exchange-date
+checks explicit; without one, completeness remains unknown. No prices, returns or
+strategy scores are exported, and no research/access history is written.
+
+```bash
+momentum-lab data check datasets/aaa/manifest.json --sessions sessions.json
+momentum-lab portfolio preflight --config portfolio.json --output experiments/preflight/new-check
+```
+
+Exit codes are 0 (passed), 1 (review warnings), 2 (errors). See [PREFLIGHT.md](PREFLIGHT.md)
+for the calendar contract, Python APIs, read-only scope and limitations. This is a
+structural preflight, not point-in-time certification or an investment-readiness
+claim. Accounting and all 24 frozen ledgers are unchanged; source-locked studies
+still require their original version/environment.
+
 ## v0.17.0 accounting and determinism fixes
 
 Single-asset execution now preserves currency holdings and solves target weights

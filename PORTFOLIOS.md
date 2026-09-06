@@ -14,6 +14,13 @@ command described here keeps its explicit full-history consent behavior.
 
 ## Run an offline portfolio
 
+Before consenting to full-history research, use
+`momentum-lab portfolio preflight --config portfolio.json` to inspect data
+integrity, exact date alignment, shared declarations and optional membership.
+This v0.18 [read-only preflight](PREFLIGHT.md) runs no strategy and writes no
+registry/run state; an optional `--sessions` calendar checks missing dates.
+It does not establish point-in-time validity, execution feasibility or test access.
+
 First import at least two daily CSV snapshots using [DATASETS.md](DATASETS.md).
 Use only data you are permitted to use. The project does not provide licensed
 market history. Each snapshot needs its own canonical ticker and truthful

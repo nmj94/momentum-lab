@@ -51,6 +51,8 @@ def main():
         "  momentum-lab BTC-USD --workers 4    # Search Bitcoin with 4 cores\n"
         "  momentum-lab AAPL --strategies tsmom,ma_cross,rsi\n"
         "  momentum-lab benchmark              # Offline frozen regression suite\n"
+        "  momentum-lab data check manifest.json # Read-only data/date diagnostics\n"
+        "  momentum-lab portfolio preflight --config portfolio.json # Compatibility checks only\n"
         "  momentum-lab portfolio --help       # Fixed-rule multi-asset research\n"
         "  momentum-lab portfolio study --help # Registered portfolio study\n"
         "  momentum-lab runs status experiments/gld-dev --verify # Score-free run receipt\n"

@@ -223,6 +223,20 @@ Next priorities remain point-in-time licensed data, portfolio liquidity and
 multi-asset selection. Existing source-locked studies are intentionally not
 migrated across the accounting boundary.
 
+## v0.18 — Structural data preflight
+
+Delivered in v0.18.0:
+
+- Read-only offline integrity and date checks, explicit user-declared session
+  calendars and metadata-only diagnostics without strategy/test evaluation.
+- Multi-asset convention/alignment checks, possible duplicate-file warnings,
+  minimum-history and membership validation, bounded portable report artifacts.
+- CLI exit-code contracts, no-score/no-registry tests and installed-core coverage.
+
+This is a readiness diagnostic layer, not completion of the point-in-time data
+gate above. Stable security identifiers, independently sourced listing/delisting
+events, corporate-action settlements and licensed historical data remain open.
+
 ## v1.0 — Stable research platform
 
 - Stable public API and migration policy.
