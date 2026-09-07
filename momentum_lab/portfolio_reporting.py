@@ -2,6 +2,7 @@
 
 import html
 
+from .portfolio import TURNOVER_POLICY
 from .reporting import _display, _markdown_cell
 
 LIMITATIONS = (
@@ -11,9 +12,10 @@ LIMITATIONS = (
     "Adjustment, source and license fields are user declarations, not independently verified. "
     "Whole-history and development metrics include warm-up cash intervals; test reports use the documented prior-close anchor. "
     "The initial structural zero return is excluded. "
-    "Target caps apply at rebalances; actual asset weights drift between fills. "
+    "Target caps describe requested allocations; turnover limits can prevent reaching them and weights drift between fills. "
     "The last signal may still be pending: no fill is invented after the final data bar. "
-    "Cash uses an effective annual ACT/365 rate; this differs from the single-asset engine's simple ACT/365.25 convention."
+    "Cash uses an effective annual ACT/365 rate; this differs from the single-asset engine's simple ACT/365.25 convention. "
+    + TURNOVER_POLICY
 )
 _METRICS = (
     ("final_nav", "Final NAV", False),
@@ -25,6 +27,9 @@ _METRICS = (
     ("transaction_costs", "Paid transaction costs", False),
     ("turnover", "Two-sided turnover / pre-trade NAV", False),
     ("rebalances", "Executed rebalance instructions", False),
+    ("requested_notional", "Requested gross notional", False),
+    ("unfilled_notional", "Expired unfilled notional", False),
+    ("limited_rebalances", "Turnover-limited instructions", False),
     ("average_cash_weight", "Average cash weight", True),
 )
 

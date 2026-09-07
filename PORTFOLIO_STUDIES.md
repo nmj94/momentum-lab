@@ -1,4 +1,11 @@
-# Registered portfolio studies (v0.14)
+# Registered portfolio studies (v0.19)
+
+Optional [turnover budgets](TURNOVER.md) are supported in the fixed recipe.
+`max_turnover` is protocol-bound and applied equally to both accounts; execution
+diagnostics are development-only until explicit reveal. Test anchors preserve
+holdings but zero all execution flows, and expired remainders never become pending
+orders. Use new runs/studies after upgrading; old source-locked studies need their
+original package/environment.
 
 `momentum-lab portfolio study` evaluates a **fixed portfolio rule** on development
 data first. A separate, explicit invocation reveals its test results. It is not
@@ -213,4 +220,6 @@ and a clean installed core wheel without optional ML dependencies.
 
 Still out of scope: verified point-in-time data supply, unbalanced IPO histories,
 delisting payouts, missing-price/halts settlement, portfolio parameter selection,
-selection-aware uncertainty, FX, liquidity/partial fills and live execution.
+selection-aware uncertainty, FX, volume-based liquidity/impact and live execution.
+v0.19 turnover-budget partial fills are available under the declared assumptions
+in [TURNOVER.md](TURNOVER.md); they do not model actual market capacity.

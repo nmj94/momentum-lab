@@ -72,6 +72,55 @@ def metadata(config):
     return json.loads((Path(config.result_dir) / config.run_id / "run_config.json").read_text())
 
 
+@pytest.mark.parametrize("cap", [0, 0.05, 0.3])
+def test_turnover_budget_reaches_both_accounts_reports_and_receipts(config, cap):
+    config.max_turnover = cap
+    summary = run_portfolio(config, acknowledge_history=True)
+    output = Path(summary["result_dir"])
+    for prefix, metric in (("", "metrics"), ("benchmark_", "benchmark_metrics")):
+        audit = pd.read_csv(output / f"{prefix}execution.csv", index_col="date")
+        book = pd.read_csv(output / f"{prefix}ledger.csv", index_col="date")
+        requested = pd.read_csv(output / f"{prefix}requested_trades.csv", index_col="date")
+        remaining = pd.read_csv(output / f"{prefix}unfilled_trades.csv", index_col="date")
+        trades = pd.read_csv(output / f"{prefix}trades.csv", index_col="date")
+        assert (book["turnover"] <= cap + 1e-12).all()
+        np.testing.assert_allclose(requested, trades + remaining, atol=1e-10)
+        assert summary[metric]["limited_rebalances"] == audit["turnover_limited"].sum()
+        assert summary[metric]["unfilled_notional"] == pytest.approx(audit["unfilled_notional"].sum())
+        assert audit["turnover_limited"].any()
+    manifest = metadata(config)
+    assert manifest["recipe"]["max_turnover"] == cap
+    assert "expire immediately" in manifest["turnover_policy"]
+    assert "Expired unfilled notional" in (output / "report.md").read_text()
+    assert "Turnover-limited instructions" in (output / "report.html").read_text()
+    assert inspect_run(output, verify=True)["integrity"] == "verified"
+    # The comparison's single partial entry is not silently retried.
+    audit = pd.read_csv(output / "benchmark_execution.csv")
+    assert audit["instruction_processed"].sum() == 1
+
+
+@pytest.mark.parametrize("bad", [True, -1, 2.1, "0.2"])
+def test_invalid_turnover_is_rejected_before_data_registry_or_run_creation(config, monkeypatch, bad):
+    config.max_turnover = bad
+    monkeypatch.setattr(pr, "_load_universe", lambda *a: pytest.fail("No dataset reads for invalid budget"))
+    with pytest.raises(PortfolioError, match="max_turnover"):
+        run_portfolio(config, acknowledge_history=True)
+    assert not Path(config.result_dir).exists()
+
+
+def test_turnover_recipe_works_with_preflight_without_research_access(config, monkeypatch):
+    from momentum_lab import preflight_portfolio
+
+    config.max_turnover = 0.1
+    monkeypatch.setattr(pr, "_compute_books", lambda *a: pytest.fail("No evaluation in preflight"))
+    before = config.to_dict()
+    first = preflight_portfolio(config)
+    assert first["error_count"] == 0 and config.to_dict() == before
+    config.max_turnover = 0.2
+    assert first["checked_recipe_sha256"] != preflight_portfolio(config)["checked_recipe_sha256"]
+    assert not Path(config.result_dir).exists()
+
+
 def test_portfolio_run_receipt_and_contention_preserve_one_complete_output(config, monkeypatch):
     compute = pr._compute_books
 
@@ -171,6 +220,13 @@ def test_complete_book_exports_reconcile_and_baseline_uses_same_warmup(config):
         "executed_targets.csv",
         "benchmark_ledger.csv",
         "benchmark_weights.csv",
+        "benchmark_trades.csv",
+        "execution.csv",
+        "requested_trades.csv",
+        "unfilled_trades.csv",
+        "benchmark_execution.csv",
+        "benchmark_requested_trades.csv",
+        "benchmark_unfilled_trades.csv",
     }
     assert {path.name for path in output.iterdir()} == expected
     book = pd.read_csv(output / "ledger.csv", index_col="date")
@@ -189,7 +245,7 @@ def test_complete_book_exports_reconcile_and_baseline_uses_same_warmup(config):
     pd.testing.assert_frame_equal(book.iloc[:first], benchmark.iloc[:first])
     assert summary["assets"] == ["AAA", "BBB", "CCC"]
     manifest = metadata(config)
-    assert manifest["portfolio_engine_schema"] == 1
+    assert manifest["portfolio_engine_schema"] == 2
     assert manifest["cash_convention"] == "effective annual rate, ACT/365"
     assert manifest["observation_scope"] == "entire_evaluated_history_is_development"
     assert manifest["recipe"]["lookback"] == config.lookback

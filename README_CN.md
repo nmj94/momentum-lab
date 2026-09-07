@@ -48,6 +48,23 @@ momentum-lab SPY --all-strategies --exhaustive --workers 8
 
 未来发布使用的 distribution name 为 `momentum-research-lab`；Python import 和命令行名称仍为 `momentum_lab` 与 `momentum-lab`。
 
+## v0.19 — 组合换仓控制
+
+在组合或注册研究配置中添加 `"max_turnover": 0.20`，把每次调仓的买卖总额限制在
+调仓前净值的 20%。所有买卖腿同比例缩减，费用仅按实际成交收取；未完成部分立即失效，
+持有日不自动补单。默认不设限，原有回测结果不变。
+
+新增执行明细和报告指标，展示请求、成交、未成交金额。上限同样作用于比较基准与退出指令，
+可能留下现金或未完全退出的持仓。此功能不代表市场真实流动性。详见 [TURNOVER.md](TURNOVER.md)。
+
+```bash
+# 八项独立分数账本验证新模型；无须市场数据或研究揭示授权。
+momentum-lab portfolio benchmark --turnover
+```
+
+组合引擎版本升级为 2，原有 24 项冻结基准保留；旧的锁版本研究仍需使用原环境。
+运行前可用 `momentum-lab portfolio preflight --config portfolio.json` 进行只读数据预检。
+
 ## v0.16 — 私密备份与隔离恢复
 
 将空闲实验的全部输出、运行状态，以及**完整共享研究登记库**一起备份，保留既往访问、失败记录和已固定的揭示结果。数据库通过 SQLite 一致性快照复制，包含 WAL 中已提交的数据；恢复前核验文件清单及哈希，并只写入新目录。

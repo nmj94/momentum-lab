@@ -18,7 +18,7 @@ from momentum_lab import PortfolioStudyRegistry, StudyRegistry
 
 def main():
     assert "site-packages" in Path(momentum_lab.__file__).resolve().parts, "smoke must use the installed wheel"
-    assert momentum_lab.__version__ == "0.18.0"
+    assert momentum_lab.__version__ == "0.19.0"
     assert importlib.util.find_spec("sklearn") is None, "portfolio study core must not require optional ML"
     with tempfile.TemporaryDirectory(prefix="momentum-portfolio-study-smoke-") as folder:
         root = Path(folder)
@@ -106,6 +106,7 @@ def main():
             "top_k": 1,
             "rebalance": "weekly",
             "max_weight": 0.8,
+            "max_turnover": 0.1,
             "cost_bps": 5,
             "slippage_bps": 2,
             "spread_bps": 4,
@@ -143,6 +144,11 @@ def main():
         np.testing.assert_allclose(book["nav"], book["cash"] + values.sum(axis=1))
         np.testing.assert_allclose(revealed["test"]["metrics"]["starting_nav"], development["nav"].iloc[-1])
         assert book["return"].iloc[0] == 0 and book["transaction_cost"].iloc[0] == 0
+        for account_prefix in ("", "benchmark_"):
+            audit = pd.read_csv(root / "runs" / "revealed" / f"test_{account_prefix}execution.csv", index_col="date")
+            assert (audit.iloc[0] == 0).all()
+            partial = pd.read_csv(root / "runs" / "revealed" / f"test_{account_prefix}ledger.csv", index_col="date")
+            assert (partial["turnover"] <= config["max_turnover"] + 1e-12).all()
         invoke(*prefix, "--run-id", "replayed", "--reveal-test")
         replay = summary("replayed")
         assert replay["test"] == revealed["test"] and replay["test_access"]["cached"]

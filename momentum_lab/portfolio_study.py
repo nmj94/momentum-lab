@@ -72,6 +72,7 @@ def _evaluation_recipe(config):
         "cash_rate",
         "risk_free_rate",
         "initial_capital",
+        "max_turnover",
     )
     return PortfolioConfig(datasets={}, **{name: getattr(config, name) for name in names})
 
@@ -98,6 +99,14 @@ def _test_books(books, anchor):
         ledger.loc[anchor, "rebalance_executed"] = False
         frames["trades"].loc[anchor] = 0.0
         frames["executed_targets"].loc[anchor] = np.nan
+        for name in ("requested_trades", "unfilled_trades"):
+            if name in frames:
+                frames[name].loc[anchor] = 0.0
+        if "execution" in frames:
+            for name in frames["execution"]:
+                frames["execution"].loc[anchor, name] = (
+                    False if name in {"instruction_processed", "turnover_limited"} else 0.0
+                )
         result[account] = frames
     return result
 

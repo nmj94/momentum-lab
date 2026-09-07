@@ -99,6 +99,25 @@ distributed lease or tamper-proof signature. Research access history and explici
 reveal/reuse consent are unchanged. Upgrade with new runs/protocols; old
 source/version-locked research still needs its original environment.
 
+## v0.19.0 portfolio turnover budgets
+
+Portfolio and registered-study recipes now accept `"max_turnover": 0.20` to
+limit gross buys plus sells to 20% of pre-trade NAV per scheduled instruction.
+Partial fills scale all legs together and pay fees only on filled amounts;
+unfilled amounts expire immediately. New execution CSVs and human reports show
+requested/filled/unfilled notionals and limited-instruction counts for both books.
+
+The default `null` preserves existing accounting and all 24 legacy frozen ledgers.
+Eight additional independent rational ledgers validate the new model:
+
+```bash
+momentum-lab portfolio benchmark --turnover
+```
+
+See [TURNOVER.md](TURNOVER.md) for funding algebra, examples and benchmark/exit
+implications. This is a turnover budget, not verified liquidity or broker execution.
+The budget is frozen into registered studies; use new runs/studies on upgrade.
+
 ## v0.18.0 read-only data preflight
 
 Check input integrity and date coverage before running strategies. New

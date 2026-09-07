@@ -237,6 +237,21 @@ This is a readiness diagnostic layer, not completion of the point-in-time data
 gate above. Stable security identifiers, independently sourced listing/delisting
 events, corporate-action settlements and licensed historical data remain open.
 
+## v0.19 — Portfolio turnover budgets
+
+Delivered in v0.19.0:
+
+- Optional per-instruction gross-turnover budgets, proportional shared-cash partial
+  fills, paid fees and immediate remainder expiry; unrestricted defaults unchanged.
+- Execution diagnostics for both books, including registered development/test
+  visibility, boundary-flow isolation and protocol-bound numeric rules.
+- Eight new exact-rational frozen ledgers and installed/cross-platform regressions.
+
+This is an execution-budget control, not completion of the liquidity or point-in-time
+data gates. Volume participation, nonlinear portfolio impact, verified security
+identity, listing/delisting settlement and licensed historical data remain open.
+Portfolio parameter search and paper execution retain those prerequisites.
+
 ## v1.0 — Stable research platform
 
 - Stable public API and migration policy.

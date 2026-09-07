@@ -38,6 +38,7 @@ def main():
             return completed.stdout + completed.stderr
 
         assert "passed (6 cases)" in invoke("portfolio", "benchmark")
+        assert "passed (8 cases)" in invoke("portfolio", "benchmark", "--turnover")
         index = pd.date_range("2024-01-02", periods=90, freq="B", name="date")
         for number, ticker in enumerate(("AAA", "BBB")):
             close = 100 * np.exp(0.001 * np.arange(len(index)) + 0.1 * np.sin(np.arange(len(index)) / 7 + number))
@@ -71,6 +72,7 @@ def main():
             "top_k": 1,
             "rebalance": "weekly",
             "max_weight": 0.8,
+            "max_turnover": 0.15,
             "cost_bps": 5,
             "slippage_bps": 2,
             "spread_bps": 4,
@@ -96,6 +98,15 @@ def main():
         np.testing.assert_allclose(weights.sum(axis=1) + book["cash_weight"], 1)
         np.testing.assert_allclose(book["transaction_cost"], trades.abs().sum(axis=1) * 0.0009, atol=1e-12)
         assert book["cash"].min() >= 0
+        assert (book["turnover"] <= 0.15 + 1e-12).all()
+        audit = pd.read_csv(output / "execution.csv", index_col=0)
+        assert audit["turnover_limited"].any()
+        assert summary["metrics"]["limited_rebalances"] == audit["turnover_limited"].sum()
+        requested = pd.read_csv(output / "requested_trades.csv", index_col=0)
+        remaining = pd.read_csv(output / "unfilled_trades.csv", index_col=0)
+        np.testing.assert_allclose(requested, trades + remaining, atol=1e-10)
+        comparison = pd.read_csv(output / "benchmark_execution.csv", index_col=0)
+        assert comparison["turnover_limited"].sum() == 1 and comparison["instruction_processed"].sum() == 1
         assert np.flatnonzero(book["rebalance_executed"])[0] == 11
         registry = StudyRegistry(environment["MOMENTUM_LAB_REGISTRY_PATH"], create=False)
         history = registry.history()
@@ -114,7 +125,7 @@ def main():
         assert len(receipt["history"]) == 1 and "metrics" not in json.dumps(receipt)
         verify_recovery(output, root / "backup", registry.path)
     print(
-        "Portfolio smoke: passed (core wheel, six frozen ledgers, offline CLI, delayed fills, cash/fees, audit, no overwrite, recovery bundle)"
+        "Portfolio smoke: passed (core wheel, legacy/turnover frozen ledgers, offline CLI, delayed partial fills, cash/fees, audit, no overwrite, recovery bundle)"
     )
 
 

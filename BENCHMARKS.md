@@ -109,6 +109,16 @@ Output directories must be new. Files are written atomically one by one; a
 failed export can leave a partial directory, but never overwrites a prior run.
 The command has no automatic rebaseline option and cannot replace bundled data.
 
+## Portfolio turnover regression (v0.19)
+
+`momentum-lab portfolio benchmark --turnover` verifies eight new independent
+exact-rational [turnover-budget](TURNOVER.md) cases. The standard-library oracle
+uses sign-region algebra and convex accounts, separately from production's
+bisection/trade scaling. SHA-256 locks the fixture; every accounting and execution
+audit cell is checked with `rtol=atol=1e-11`. Existing 16 single-asset, six portfolio
+and two membership/study ledgers are unchanged. All 32 run offline in CI; they
+test software, not investment performance or real-market liquidity.
+
 ## Reference-review and release policy
 
 The retained v1 expected ledgers were captured with the v0.9.0 harness using the unchanged

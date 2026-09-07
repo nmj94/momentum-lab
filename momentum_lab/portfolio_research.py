@@ -26,6 +26,7 @@ from .portfolio import (
     MAX_PORTFOLIO_ASSETS,
     MAX_PORTFOLIO_CELLS,
     PORTFOLIO_ENGINE_SCHEMA,
+    TURNOVER_POLICY,
     PortfolioError,
     _number,
     _symbols,
@@ -79,6 +80,7 @@ class PortfolioConfig:
     run_id: str | None = None
     registry_path: str | None = None
     universe: str | None = None
+    max_turnover: float | None = None
 
     @classmethod
     def from_mapping(cls, values):
@@ -150,8 +152,11 @@ def _validate_config(config):
         config.spread_bps,
         config.cash_rate,
         1,
+        config.max_turnover,
     )
     _number(config.risk_free_rate, "risk_free_rate", exclusive_minimum=-1)
+    if config.max_turnover is not None:
+        config.max_turnover = float(config.max_turnover)
     if config.universe is not None:
         if not isinstance(config.universe, (str, Path)) or not str(config.universe).strip():
             raise PortfolioError("universe must be a non-empty local membership manifest path")
@@ -239,15 +244,17 @@ def _research_contract(config, provenance, snapshots, membership_source=None):
         "package_version": __version__,
         "environment": _environment_manifest(),
         "lock_fingerprint": _file_fingerprint(source_root / "uv.lock"),
-        "execution_model": "next_close",
+        "execution_model": "next_close" if config.max_turnover is None else "next_close_with_turnover_budget",
         "execution_lag": 1,
+        "turnover_policy": TURNOVER_POLICY,
         "cash_convention": "effective annual rate, ACT/365",
         "benchmark": (
             "membership_equal_weight_at_signal_dates"
             if membership_source
             else "equal_weight_buy_and_hold_after_same_warmup_with_same_target_cap"
         ),
-        "benchmark_label": "Membership equal-weight rebalanced" if membership_source else "Equal-weight buy and hold",
+        "benchmark_label": ("Membership equal-weight rebalanced" if membership_source else "Equal-weight buy and hold")
+        + (" (turnover budget)" if config.max_turnover is not None else ""),
         "observation_scope": "entire_evaluated_history_is_development",
     }
 
@@ -265,7 +272,7 @@ def _compute_books(config, prices, eligibility=None):
     )
     execution = {
         name: getattr(config, name)
-        for name in ("initial_capital", "cost_bps", "slippage_bps", "spread_bps", "cash_rate")
+        for name in ("initial_capital", "cost_bps", "slippage_bps", "spread_bps", "cash_rate", "max_turnover")
     }
     execution["execution_lag"] = 1
     result = backtest_portfolio(plan["targets"], prices, **execution)
@@ -330,7 +337,11 @@ def _book_exports(books):
         "executed_targets.csv": result["executed_targets"],
         "benchmark_ledger.csv": benchmark["ledger"],
         "benchmark_weights.csv": benchmark["weights"],
+        "benchmark_trades.csv": benchmark["trades"],
     }
+    for prefix, account in (("", result), ("benchmark_", benchmark)):
+        for name in ("execution", "requested_trades", "unfilled_trades"):
+            exports[f"{prefix}{name}.csv"] = account[name]
     if books["eligibility"] is not None:
         exports["eligibility.csv"] = books["eligibility"]
     return exports
@@ -439,9 +450,15 @@ def main(argv=None):
         epilog="Data checks: momentum-lab portfolio preflight --config recipe.json. Frozen software ledger check: momentum-lab portfolio benchmark. Registered workflow: momentum-lab portfolio study --help",
     )
     if argv and argv[0] == "benchmark":
-        parser.parse_args(argv[1:])
+        parser.add_argument("--turnover", action="store_true", help="Check independent turnover-budget ledgers")
+        args = parser.parse_args(argv[1:])
         try:
-            result = check_portfolio_reference()
+            if args.turnover:
+                from .portfolio_turnover_benchmarks import check_portfolio_turnover_reference
+
+                result = check_portfolio_turnover_reference()
+            else:
+                result = check_portfolio_reference()
         except PortfolioError as exc:
             parser.error(str(exc))
         print(f"Frozen portfolio ledger: {result['status']} ({result['cases']} cases)")

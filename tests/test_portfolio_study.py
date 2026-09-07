@@ -120,6 +120,51 @@ def no_evaluation(monkeypatch):
     monkeypatch.setattr(ps, "_compute_books", lambda *a, **k: pytest.fail("No portfolio evaluation permitted"))
 
 
+def test_turnover_limit_stays_sealed_carries_into_test_and_replays_without_scoring(config, monkeypatch):
+    config.max_turnover = 0.03
+    compute = ps._compute_books
+
+    def checked(recipe, prices, eligibility):
+        assert recipe.max_turnover == config.max_turnover
+        assert recipe.datasets == {} and not hasattr(recipe, "test_start")
+        assert len(prices) == 35
+        return compute(recipe, prices, eligibility)
+
+    monkeypatch.setattr(ps, "_compute_books", checked)
+    development = run_portfolio_study(config)
+    assert development["test"] is None
+    assert not list(Path(development["result_dir"]).glob("test_*.csv"))
+    assert ledger(development, "development_execution.csv")["turnover_limited"].any()
+    monkeypatch.setattr(ps, "_compute_books", compute)
+    revealed = run(config, reveal_test=True)
+    for prefix, metric in (("", "metrics"), ("benchmark_", "benchmark_metrics")):
+        audit = ledger(revealed, f"test_{prefix}execution.csv")
+        book = ledger(revealed, f"test_{prefix}ledger.csv")
+        assert (audit.iloc[0] == 0).all()
+        assert (book["turnover"] <= config.max_turnover + 1e-12).all()
+        assert revealed["test"][metric]["limited_rebalances"] == audit["turnover_limited"].sum()
+        assert revealed["test"][metric]["unfilled_notional"] == pytest.approx(audit["unfilled_notional"].sum())
+        for name in ("requested_trades", "unfilled_trades"):
+            assert ledger(revealed, f"test_{prefix}{name}.csv").iloc[0].eq(0).all()
+    # Anchor holdings carry unchanged; no development execution flow is counted twice.
+    np.testing.assert_allclose(
+        ledger(development, "development_holdings.csv").iloc[-1], ledger(revealed, "test_holdings.csv").iloc[0]
+    )
+    no_evaluation(monkeypatch)
+    replay = run(config, "replay-budget", reveal_test=True)
+    assert replay["test_access"]["cached"] and replay["test"] == revealed["test"]
+    assert not list(Path(replay["result_dir"]).glob("*.csv"))
+
+
+def test_turnover_revision_cannot_change_a_registered_rule_before_reveal(config, monkeypatch):
+    config.max_turnover = 0.1
+    run_portfolio_study(config)
+    config.max_turnover = 0.2
+    no_evaluation(monkeypatch)
+    with pytest.raises(RegistryError, match="protocol|frozen"):
+        run(config, "changed-budget", reveal_test=True)
+
+
 def test_development_evaluator_receives_only_prefix_and_sanitized_rules(config, monkeypatch):
     original = ps._compute_books
     before = copy.deepcopy(config.to_dict())

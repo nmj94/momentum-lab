@@ -3,6 +3,29 @@
 All notable changes are documented here. The project follows semantic versioning
 for its public Python API and run/checkpoint schema.
 
+## [0.19.0] - 2026-09-07
+
+### Portfolio turnover budgets and partial execution audit
+
+- Add optional `max_turnover` to the portfolio Python API and fixed-rule/study
+  recipes. Limit gross buys plus sells / pre-trade NAV per instruction; scale
+  all legs together, charge filled notional only and immediately expire remainders.
+- Apply the same limit to both accounts, retain funding/holdings consistency and
+  label budgeted comparisons. Do not retry a partially filled buy-and-hold entry.
+- Export requested/filled/unfilled diagnostics, signed per-asset requests and
+  expired amounts for both books; add execution metrics to JSON/Markdown/HTML.
+- Bind the budget into registered protocols, withhold test diagnostics until
+  reveal and clear all execution flows at the test anchor while carrying holdings.
+- Add eight independent exact-rational frozen ledgers and `portfolio benchmark
+  --turnover`, funding/causality/boundary tests, cross-platform CI and installed
+  portfolio/study lifecycle checks with constrained execution.
+
+Compatibility: portfolio engine schema 2; default `null` preserves all 24 legacy
+frozen ledgers. Other engine/data/registry schemas are unchanged. New return frames,
+CSV artifacts and summary metrics are additive. Old source/version-locked research
+requires its original environment. A budget is not verified market liquidity and
+may prevent reaching target caps or completing membership/cash exits. See [TURNOVER.md](TURNOVER.md).
+
 ## [0.18.0] - 2026-09-06
 
 ### Read-only offline data and portfolio preflight

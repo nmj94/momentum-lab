@@ -1,6 +1,6 @@
 """Causal cross-sectional signals and a self-financing long-only portfolio book.
 
-This is a separate accounting model (schema 1), not an average of independent
+This is a separate accounting model (schema 2), not an average of independent
 single-asset backtests. NaN target rows mean HOLD SHARES, not daily rebalancing.
 """
 
@@ -14,7 +14,14 @@ from numbers import Real
 import numpy as np
 import pandas as pd
 
-PORTFOLIO_ENGINE_SCHEMA = 1
+PORTFOLIO_ENGINE_SCHEMA = 2
+TURNOVER_POLICY = (
+    "Optional max_turnover bounds gross buys plus sells divided by pre-trade NAV per scheduled instruction. "
+    "All legs of the unrestricted post-cost target trade are scaled together; fees apply only to filled notional. "
+    "Unfilled amounts expire immediately and are not queued or retried on HOLD rows. "
+    "The same limit applies to both accounts at their own signal dates; a buy-and-hold entry is attempted only once. "
+    "This is a turnover budget, not a volume/liquidity model or a guarantee of target weights or membership exits."
+)
 MAX_PORTFOLIO_ASSETS = 64
 MAX_PORTFOLIO_CELLS = 1_000_000
 REBALANCE_FREQUENCIES = ("daily", "weekly", "monthly")
@@ -168,7 +175,9 @@ def cross_sectional_momentum(
     }
 
 
-def validate_execution_options(initial_capital, cost_bps, slippage_bps, spread_bps, cash_rate, execution_lag):
+def validate_execution_options(
+    initial_capital, cost_bps, slippage_bps, spread_bps, cash_rate, execution_lag, max_turnover=None
+):
     _number(initial_capital, "initial_capital", exclusive_minimum=0)
     for name, value in (("cost_bps", cost_bps), ("slippage_bps", slippage_bps), ("spread_bps", spread_bps)):
         _number(value, name, minimum=0)
@@ -176,6 +185,8 @@ def validate_execution_options(initial_capital, cost_bps, slippage_bps, spread_b
         raise PortfolioError("Combined one-way costs must be below 10000 bps")
     _number(cash_rate, "cash_rate", exclusive_minimum=-1)
     _integer(execution_lag, "execution_lag")
+    if max_turnover is not None:
+        _number(max_turnover, "max_turnover", minimum=0, maximum=2)
 
 
 def _post_cost_nav(nav, current_values, weights, rate):
@@ -209,6 +220,7 @@ def backtest_portfolio(
     spread_bps=0.0,
     cash_rate=0.0,
     execution_lag=1,
+    max_turnover=None,
 ):
     """One shared cash/holdings account, with delayed close fills and paid fees.
 
@@ -217,9 +229,17 @@ def backtest_portfolio(
     post-cost NAV fractions summing to at most one (1e-12 rounding tolerance).
     Unfilled last-bar instructions are not executed beyond the available data.
     Cash accrues an effective annual rate over actual elapsed days / 365.
+    max_turnover=None preserves unrestricted execution. A number in [0, 2]
+    caps gross buys PLUS sells / pre-trade NAV per instruction (not half-turnover).
+    Requested legs are scaled together; unfilled amounts expire immediately.
+    HOLD never retries an expired remainder. Actual weights can miss targets.
+    The execution frame records requests/fills; requested_trades and
+    unfilled_trades contain signed notionals, not queued orders or share counts.
     No FX, leverage, shorts, taxes, capacity, minimum fees or asynchronous fills.
     """
-    validate_execution_options(initial_capital, cost_bps, slippage_bps, spread_bps, cash_rate, execution_lag)
+    validate_execution_options(
+        initial_capital, cost_bps, slippage_bps, spread_bps, cash_rate, execution_lag, max_turnover
+    )
     prices = _prices(prices)
     if not isinstance(targets, pd.DataFrame) or not targets.index.equals(prices.index):
         raise PortfolioError("Target dates must match price dates exactly; no reindexing/filling")
@@ -255,6 +275,7 @@ def backtest_portfolio(
     previous_nav = cash
     rate = (float(cost_bps) + float(slippage_bps) + float(spread_bps) / 2.0) / 10000.0
     holdings, weight_rows, value_rows, trade_rows, ledger = [], [], [], [], []
+    requests, remainders, executions = [], [], []
     elapsed_days = prices.index.to_series().diff().dt.days.fillna(0).to_numpy(dtype=float)
     for row, quote in enumerate(quotes):
         with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
@@ -266,6 +287,8 @@ def backtest_portfolio(
         if not np.isfinite(pre_nav) or pre_nav <= 0:
             raise PortfolioError("Portfolio produced non-finite/non-positive NAV; review input scales and rates")
         traded = np.zeros(len(quote), dtype=float)
+        requested = traded.copy()
+        fraction, limited = 0.0, False
         fees = 0.0
         executed = bool(np.isfinite(orders[row]).all())
         if executed:
@@ -273,13 +296,25 @@ def backtest_portfolio(
             post_nav = _post_cost_nav(pre_nav, current_values, desired, rate)
             new_values = desired * post_nav
             traded = new_values - current_values
+            requested = traded.copy()
+            requested_turnover = float(np.abs(requested).sum()) / pre_nav
+            fraction = 1.0
+            if max_turnover is not None and requested_turnover > max_turnover:
+                # Avoid cap*nav overflow; scaling the complete feasible trade
+                # preserves non-negative cash/holdings, unlike buy-first fills.
+                fraction = float(max_turnover) / requested_turnover
+                limited = True
+                traded = requested * fraction
+                new_values = current_values + traded
             fees = float(np.abs(traded).sum() * rate)
-            cash = pre_nav - fees - float(new_values.sum())
+            # A zero budget must preserve exact shares/cash, including under
+            # price drift; do not round-trip held units through marked values.
+            cash = pre_nav - fees - float(new_values.sum()) if fraction else cash
             if cash < -1e-12 * pre_nav:
                 raise PortfolioError("Self-financing check failed: a rebalance would borrow cash")
             cash = max(0.0, cash)  # At most machine-roundoff from summing filled legs.
             with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
-                units = new_values / quote
+                units = new_values / quote if fraction else units
             if not np.isfinite(units).all():
                 raise PortfolioError("Holdings exceed numerical range")
             current_values = new_values
@@ -310,6 +345,20 @@ def backtest_portfolio(
         weight_rows.append(weights)
         value_rows.append(current_values.copy())
         trade_rows.append(traded)
+        requests.append(requested)
+        remainders.append(requested - traded)
+        executions.append(
+            {
+                "instruction_processed": executed,
+                "requested_notional": float(np.abs(requested).sum()),
+                "filled_notional": float(np.abs(traded).sum()),
+                "unfilled_notional": float(np.abs(requested - traded).sum()),
+                "fill_fraction": fraction,
+                "turnover_limited": limited,
+            }
+        )
+        if not all(math.isfinite(value) for value in executions[-1].values()):
+            raise PortfolioError("Portfolio execution audit exceeds numerical range")
         previous_nav = nav
     return {
         "ledger": pd.DataFrame(ledger, index=prices.index),
@@ -318,6 +367,9 @@ def backtest_portfolio(
         "asset_values": pd.DataFrame(value_rows, index=prices.index, columns=prices.columns),
         "trades": pd.DataFrame(trade_rows, index=prices.index, columns=prices.columns),
         "executed_targets": scheduled,
+        "execution": pd.DataFrame(executions, index=prices.index),
+        "requested_trades": pd.DataFrame(requests, index=prices.index, columns=prices.columns),
+        "unfilled_trades": pd.DataFrame(remainders, index=prices.index, columns=prices.columns),
     }
 
 
@@ -358,6 +410,13 @@ def portfolio_metrics(result, *, annualization=252.0, risk_free_rate=0.0):
         "rebalances": int(ledger["rebalance_executed"].sum()),
         "average_cash_weight": float(ledger["cash_weight"].mean()),
     }
+    if "execution" in result:
+        audit = result["execution"]
+        metrics.update(
+            requested_notional=float(audit["requested_notional"].sum()),
+            unfilled_notional=float(audit["unfilled_notional"].sum()),
+            limited_rebalances=int(audit["turnover_limited"].sum()),
+        )
     # Extreme annualization/variance can overflow despite a finite daily book.
     # Such derived statistics are undefined, never non-standard JSON NaN/Infinity.
     return {
@@ -387,7 +446,7 @@ def check_portfolio_reference():
                 raise PortfolioError(f"Frozen portfolio ledger changed: {case['id']} / {name}")
         if list(result["ledger"].columns) != suite["ledger_columns"]:
             raise PortfolioError("Frozen portfolio ledger columns changed")
-    return {"status": "passed", "cases": len(suite["cases"]), "schema_version": PORTFOLIO_ENGINE_SCHEMA}
+    return {"status": "passed", "cases": len(suite["cases"]), "schema_version": suite["schema_version"]}
 
 
 # Filled from the reviewed independent Fraction-based oracle, never rebaselined

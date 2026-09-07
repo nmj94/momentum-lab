@@ -33,6 +33,10 @@ fields such as `test_start` and `study_id` are not accepted: this does not valid
 study boundaries or access history. Use a separate fixed-rule input recipe to
 inspect its datasets; do not edit a frozen study recipe in place.
 
+v0.19 recipes may include [max_turnover](TURNOVER.md). Preflight validates this
+number in `[0, 2]` or `null` and binds it into the checked-recipe hash; it does not
+calculate fills or certify tradability. Zero is a valid cash-only execution budget.
+
 Stdout is one JSON object. Automated callers should inspect the status and exit
 code. `data inspect` and other existing commands keep their existing exit codes.
 

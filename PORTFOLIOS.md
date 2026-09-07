@@ -1,4 +1,4 @@
-# Multi-asset momentum research (v0.14)
+# Multi-asset momentum research (v0.19)
 
 The `portfolio --config ... --acknowledge-history` workflow compares assets against one another and simulates a
 single long-only, unlevered account. This is **fixed-rule, exploratory
@@ -11,6 +11,12 @@ v0.14 separately adds [registered portfolio studies](PORTFOLIO_STUDIES.md) with
 development-first evaluation and explicit test reveals. Both workflows support
 optional [declared historical membership](MEMBERSHIP.md). The whole-history
 command described here keeps its explicit full-history consent behavior.
+
+v0.19 adds optional [turnover budgets](TURNOVER.md): `max_turnover` caps each
+instruction's gross buys plus sells / pre-trade NAV. The default is unrestricted.
+Execution formulas below describe that default unless stated otherwise. Limited
+instructions can leave cash or residual holdings, including after exits; all
+unfilled amounts expire immediately, with per-asset execution audit exports.
 
 ## Run an offline portfolio
 
@@ -164,7 +170,8 @@ realized weights from the last signal, which may still be pending.
 
 All-NaN target rows mean **hold share quantities**, not “restore yesterday's
 weights.” On those dates prices change asset values and weights drift. A
-complete zero target liquidates to cash. Partial-NaN rows, negative weights,
+complete zero target requests liquidation to cash (a turnover limit can prevent
+completing it). Partial-NaN rows, negative weights,
 or target sums greater than one are rejected (only a `1e-12` rounding overshoot
 is normalized). `max_weight` caps targets at rebalances, not actual daily
 weights; a winning asset can drift above its cap before the next fill.
@@ -258,6 +265,8 @@ Each run writes:
 | `weights.csv`, `holdings.csv`, `asset_values.csv`, `trades.csv` | Realized asset weights, synthetic units, marked values and signed currency-value trades |
 | `scores.csv`, `targets.csv`, `executed_targets.csv` | Decision inputs, sparse signal targets and delayed executed instructions; blank rows mean no instruction |
 | `benchmark_ledger.csv`, `benchmark_weights.csv` | Matched-warm-up buy-and-hold baseline |
+| `execution.csv`, `requested_trades.csv`, `unfilled_trades.csv` | Processed instructions, gross fill diagnostics, signed full-target requests and immediately expired amounts |
+| `benchmark_execution.csv`, `benchmark_requested_trades.csv`, `benchmark_unfilled_trades.csv`, `benchmark_trades.csv` | Corresponding comparison-account execution audit and actual trades |
 | `eligibility.csv` (when supplied) | Boolean declared membership mask; the benchmark then rebalances eligible members |
 | `report.md`, `report.html` | Offline readable performance, allocation, source and assumption reports |
 | `summary.json` | Final metrics and allocations; written last as the completion marker |
@@ -271,9 +280,9 @@ There is no overwrite or resume mode in this first portfolio workflow.
 
 ## Software evidence and next steps
 
-Portfolio accounting has its own schema 1. The existing single-asset engine
-and checkpoint schema 5, registry schema 1, and 16 frozen single-asset cases
-are unchanged. Six new SHA-256-locked synthetic cases compare **every** ledger,
+Portfolio accounting now uses schema 2; the single-asset engine/checkpoint schema
+remains 6 and the registry schema remains 1. Six retained SHA-256-locked synthetic
+portfolio cases compare **every** ledger,
 holding, value, weight and trade cell with an independent exact-Fraction
 oracle that solves buy/sell regions algebraically. Production uses a separate
 bisection algorithm. See `scripts/portfolio_reference_oracle.py` and
@@ -287,7 +296,10 @@ reconciliation, audit ordering and interrupted runs. CI checks Python
 
 v0.14 adds two further independent membership/carried-test cases and a separate
 fixed-rule [multi-asset registered workflow](PORTFOLIO_STUDIES.md), bringing the
-frozen software suite to 16 + 6 + 2 cases. Existing accounting schemas are unchanged.
+legacy frozen software suite to 16 + 6 + 2 cases. v0.19 retains those references
+and adds eight [turnover-budget ledgers](TURNOVER.md), for 32 total. Default
+unrestricted accounting is unchanged; the new partial-execution contract uses
+portfolio engine schema 2. Old source/version-locked studies need their original environment.
 Next work is verified historical data, unbalanced IPO/delisting histories and
 explicit settlements, then selection-aware portfolio parameter research. These
 controls and forward testing should precede paper or live execution.
